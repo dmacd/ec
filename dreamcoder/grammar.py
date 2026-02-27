@@ -1,4 +1,12 @@
-from frozendict import frozendict
+try:
+    from frozendict import frozendict
+except AttributeError:
+    # Compatibility for frozendict==1.2 on Python 3.10+.
+    import collections
+    import collections.abc
+
+    collections.Mapping = collections.abc.Mapping
+    from frozendict import frozendict
 from collections import defaultdict
 
 from dreamcoder.frontier import *
