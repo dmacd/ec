@@ -1,0 +1,4 @@
+- make get hist obs relative to the current timestep by default!!
+- ditch triple eq
+- add in basic math for constructing numbers and stuff
+- expand vocab but dont have prim chars...must be referenced to be used

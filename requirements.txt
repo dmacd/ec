@@ -9,12 +9,12 @@ dill==0.2.9
 frozendict==1.2
 graphviz==0.11
 idna==2.8
-joblib==0.13.2
+joblib==1.5.3
 kiwisolver==1.1.0
 matplotlib==3.1.0
 multiprocess
 nltk==3.4.1
-# numpy
+numpy==2.2.6
 pathos==0.2.3
 Pillow #==6.0.0
 pox==0.2.5
@@ -29,8 +29,9 @@ python-dateutil==2.8.0
 pytz==2019.1
 pyzmq
 requests==2.22.0
-scikit-learn
-# scipy
+scikit-learn==1.7.2
+scipy==1.15.3
+threadpoolctl==3.6.0
 sexpdata==0.0.3
 six==1.12.0
 # torch==1.11.0
