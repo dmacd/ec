@@ -4,6 +4,7 @@
 # except ModuleNotFoundError:
 
 import bin.binutil  # alt import if called as module
+import os
 
 from dreamcoder.utilities import eprint
 
@@ -21,6 +22,7 @@ def run_sequence(name: str, seq: str) -> None:
     # Build grammar once per run.
     g = make_rbii_grammar(RBIIPrimitiveConfig(alphabet="abcde", max_int=6, log_variable=0.0))
 
+    event_log_dir = os.path.join("experimentOutputs", "rbii_program_events")
     cfg = RBIIConfig(
         pool_target_size=3,
         validation_window=6,
@@ -31,6 +33,9 @@ def run_sequence(name: str, seq: str) -> None:
         budget_increment=1.5,
         max_frontier=10,
         verbose=True,
+        event_log_dir=event_log_dir,
+        event_log_name=name,
+        log_candidate_events=True,
     )
 
     state = RBIIState()
@@ -47,6 +52,9 @@ def run_sequence(name: str, seq: str) -> None:
     # Online loop: at each step observe the next symbol.
     for i in range(warmup, len(seq)):
         rbii.observe_and_update(seq[i])
+    rbii.close()
+    if rbii.event_log_path:
+        eprint(f"Event log written: {rbii.event_log_path}")
 
     eprint("\nFinal:")
     eprint(f"  total_obs={len(state.obs_history)}")

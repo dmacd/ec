@@ -1,7 +1,10 @@
 # dreamcoder/domains/rbii/rbii_loop.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import os
+import time
+from dataclasses import asdict, dataclass
 from typing import Callable, List, Optional, Set
 
 from dreamcoder.enumeration import enumerateForTasks
@@ -25,6 +28,7 @@ class Predictor:
     # (optional) bookkeeping:
     source: str = "enumerated"
     program_id: Optional[int] = None  # absolute id in state.best_programs if stored
+    duplicate_candidate: bool = False
 
 
 @dataclass
@@ -42,6 +46,9 @@ class RBIIConfig:
     max_frontier: int = 10
 
     verbose: bool = True
+    event_log_dir: Optional[str] = None
+    event_log_name: str = "rbii_events"
+    log_candidate_events: bool = True
 
 
 class RBIILoop:
@@ -59,6 +66,48 @@ class RBIILoop:
         self.cfg = cfg
         self.pool: List[Predictor] = []
         self._seen_program_strs: Set[str] = set()
+        self._seen_candidate_program_strs: Set[str] = set()
+        self.event_log_path: Optional[str] = None
+        self._event_fp = None
+        self._init_event_log()
+
+    def _init_event_log(self) -> None:
+        if not self.cfg.event_log_dir:
+            return
+        os.makedirs(self.cfg.event_log_dir, exist_ok=True)
+        self.event_log_path = os.path.join(
+            self.cfg.event_log_dir, f"{self.cfg.event_log_name}.jsonl"
+        )
+        self._event_fp = open(self.event_log_path, "w", encoding="utf-8")
+        self._log_event(
+            "run_start",
+            timestep=self.state.time(),
+            config=asdict(self.cfg),
+        )
+
+    def _log_event(self, event: str, **payload) -> None:
+        if self._event_fp is None:
+            return
+        row = {
+            "event": event,
+            "wall_time_s": time.time(),
+            **payload,
+        }
+        self._event_fp.write(json.dumps(row, sort_keys=True) + "\n")
+        self._event_fp.flush()
+
+    def close(self) -> None:
+        if self._event_fp is None:
+            return
+        self._log_event("run_end", timestep=self.state.time())
+        self._event_fp.close()
+        self._event_fp = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _predictor_key(self, p: Program) -> str:
         # String form is stable enough for minimal de-dup.
@@ -96,11 +145,25 @@ class RBIILoop:
         """
         t = self.state.time()  # index being observed now
         pre_view = self.state.view_for_timestep(t)
+
+        # TODO: ick - fix this if we use multiple preds for
+        #  prediction
+        used_predictor = self.pool[0] if self.pool else None
         pred_before = self._predict_with_view(pre_view)
+        if used_predictor is not None:
+            self._log_event(
+                "predict_used",
+                timestep=t,
+                program_id=used_predictor.program_id,
+                program=str(used_predictor.program),
+                duplicate_candidate=used_predictor.duplicate_candidate,
+                predicted=pred_before,
+                observed=symbol,
+            )
 
         # Evict failing predictors (test on the just-observed index t)
         survivors: List[Predictor] = []
-        evicted: List[Predictor] = []
+        evicted = 0
         for pp in self.pool:
             try:
                 yhat = pp.fn(pre_view)
@@ -109,7 +172,16 @@ class RBIILoop:
             if yhat == symbol:
                 survivors.append(pp)
             else:
-                evicted.append(pp)
+                evicted += 1
+                self._log_event(
+                    "evicted",
+                    timestep=t,
+                    program_id=pp.program_id,
+                    program=str(pp.program),
+                    duplicate_candidate=pp.duplicate_candidate,
+                    predicted=yhat,
+                    observed=symbol,
+                )
         self.pool = survivors
 
         # Record the newly observed symbol after all pre-observation checks.
@@ -118,7 +190,7 @@ class RBIILoop:
         if self.cfg.verbose:
             eprint(
                 f"[t={t:03d}] pred={pred_before!r}  obs={symbol!r}  "
-                f"pool_survivors={len(self.pool)} evicted={len(evicted)}"
+                f"pool_survivors={len(self.pool)} evicted={evicted}"
             )
 
         # Refill if needed
@@ -192,19 +264,44 @@ class RBIILoop:
                 break
             p = entry.program
             k = self._predictor_key(p)
+            duplicate_candidate = k in self._seen_candidate_program_strs
+            self._seen_candidate_program_strs.add(k)
+
+            if self.cfg.log_candidate_events:
+                self._log_event(
+                    "candidate",
+                    timestep=current_index,
+                    program=str(p),
+                    duplicate_candidate=duplicate_candidate,
+                    seen_in_pool_history=(k in self._seen_program_strs),
+                )
+
             # TODO: disable this de-duplication to allow multiple programs
             #  with same string form but different semantics
             if k in self._seen_program_strs:
                 if ALLOW_DUPLICATES:
                   eprint(f"  refill: re-adding duplicate program {p}")
                 else:
+                  self._log_event(
+                      "candidate_rejected",
+                      timestep=current_index,
+                      program=str(p),
+                      duplicate_candidate=duplicate_candidate,
+                      reason="seen_in_pool_history",
+                  )
                   continue
 
             # Compile predictor function (rbii_state -> char)
-            # TODO: why?
             try:
                 fn = p.evaluate([])
             except Exception:
+                self._log_event(
+                    "candidate_rejected",
+                    timestep=current_index,
+                    program=str(p),
+                    duplicate_candidate=duplicate_candidate,
+                    reason="compile_failed",
+                )
                 continue
 
             # Store into state as a "best program" (absolute index for retrieval)
@@ -212,9 +309,24 @@ class RBIILoop:
                 p, birth_timestep=current_index
             )
 
-            self.pool.append(Predictor(program=p, fn=fn, source="enumerated", program_id=program_id))
+            self.pool.append(
+                Predictor(
+                    program=p,
+                    fn=fn,
+                    source="enumerated",
+                    program_id=program_id,
+                    duplicate_candidate=duplicate_candidate,
+                )
+            )
             self._seen_program_strs.add(k)
             added += 1
+            self._log_event(
+                "enter",
+                timestep=current_index,
+                program_id=program_id,
+                program=str(p),
+                duplicate_candidate=duplicate_candidate,
+            )
 
             if self.cfg.verbose:
                 eprint(f"  refill: added program_id={program_id}  prog={p}")
