@@ -5,6 +5,8 @@
 
 import bin.binutil  # alt import if called as module
 import os
+import subprocess
+import sys
 
 from dreamcoder.utilities import eprint
 
@@ -84,6 +86,44 @@ def run_sequence(name: str, seq: str, event_log_dir: str) -> None:
         eprint(f"    ... ({len(state.best_programs) - 10} more)")
 
 
+def _render_viz_for_run(run_event_log_dir: str) -> None:
+    """
+    Auto-render SVG timelines for all JSONL logs in this run directory and
+    write outputs into that same directory.
+    """
+    cmd = [
+        sys.executable,
+        "-m",
+        "dreamcoder.domains.rbii.rbii_viz_graph",
+        "--input-dir",
+        run_event_log_dir,
+        "--output-dir",
+        run_event_log_dir,
+    ]
+    eprint(f"Rendering viz into run dir: {run_event_log_dir}")
+    try:
+        result = subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or "").strip()
+        stdout = (e.stdout or "").strip()
+        eprint("WARNING: Viz render failed.")
+        if stdout:
+            eprint(stdout)
+        if stderr:
+            eprint(stderr)
+        return
+
+    stdout = (result.stdout or "").strip()
+    if stdout:
+        for line in stdout.splitlines():
+            eprint(line)
+
+
 def main():
     base_event_log_dir = os.path.join("experimentOutputs", "rbii_program_events")
     run_event_log_dir = _next_run_subdir(base_event_log_dir)
@@ -95,6 +135,7 @@ def main():
     run_sequence("runs_of_3",
                  "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
                  run_event_log_dir)
+    _render_viz_for_run(run_event_log_dir)
 
 
 if __name__ == "__main__":

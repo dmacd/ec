@@ -94,6 +94,18 @@ def _if(c: bool):
   return lambda x: (lambda y: x if c else y)
 
 
+def _neg_int(i: int) -> int:
+  return -int(i)
+
+
+def _add_int(a: int):
+  return lambda b: int(a) + int(b)
+
+
+def _current_timestep(state: RBIIEvalState) -> int:
+  return int(state.timestep)
+
+
 # ---- Grammar builder ----
 
 @dataclass(frozen=True)
@@ -137,6 +149,15 @@ def make_rbii_grammar(
   # int constants 0..max_int
   for i in range(cfg.max_int + 1):
     prims.append(_primitive(str(i), tint, i))
+
+  # integer arithmetic
+  prims.append(_primitive("neg_int", arrow(tint, tint), _neg_int))
+  prims.append(_primitive("add_int", arrow(tint, tint, tint), _add_int))
+
+  # current timestep lookup
+  prims.append(
+    _primitive("current_timestep", arrow(trbii_state, tint), _current_timestep)
+  )
 
   # historical observation lookup: int -> rbii_state -> char
   prims.append(
