@@ -3,7 +3,7 @@ x make get hist obs relative to the current timestep by default!!
 
 x get hist could look at the future!!!
   x need to pass versioned versions of state instead of this global lookup stuff
-     - finish reviewing changes
+     x finish reviewing changes
         x wtf does evaluate() do?? compile? how so?: 
             okay - it lets environmental conditions be used to change what 
             function is actually called via isConditional logic...but why?
@@ -11,6 +11,9 @@ x get hist could look at the future!!!
             that a callable can be constructed
 
 - review new test results...some weird failures??
+  - make a nice plot of which programs enter the pool and when (and frozen 
+    store)
+  - how is the pool used for prediction? - just takes the first program for now
 - runs of 3 test: should have recovered some predictors in the second half...
   - is this because of task duplicate filtering??
 

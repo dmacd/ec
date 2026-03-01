@@ -15,6 +15,9 @@ from .rbii_state import RBIIState, RBIIStateView
 from .rbii_types import RBIIEvalState, trbii_state
 
 
+# allow duplicate programs to re-enter the pool
+ALLOW_DUPLICATES = True
+
 @dataclass
 class Predictor:
     program: Program
@@ -192,7 +195,10 @@ class RBIILoop:
             # TODO: disable this de-duplication to allow multiple programs
             #  with same string form but different semantics
             if k in self._seen_program_strs:
-                continue
+                if ALLOW_DUPLICATES:
+                  eprint(f"  refill: re-adding duplicate program {p}")
+                else:
+                  continue
 
             # Compile predictor function (rbii_state -> char)
             # TODO: why?
