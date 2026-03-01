@@ -84,6 +84,18 @@ class RBIILoop:
             timestep=self.state.time(),
             config=asdict(self.cfg),
         )
+        # If state was seeded before loop construction (warmup), emit those
+        # observations so visualizations can include the full sequence.
+        for t, symbol in enumerate(self.state.obs_history):
+            self._log_event(
+                "observe",
+                timestep=t,
+                observed=symbol,
+                predicted=None,
+                used_program_id=None,
+                used_program=None,
+                warmup=True,
+            )
 
     def _log_event(self, event: str, **payload) -> None:
         if self._event_fp is None:
@@ -186,6 +198,14 @@ class RBIILoop:
 
         # Record the newly observed symbol after all pre-observation checks.
         self.state.observe(symbol)
+        self._log_event(
+            "observe",
+            timestep=t,
+            observed=symbol,
+            predicted=pred_before,
+            used_program_id=(used_predictor.program_id if used_predictor else None),
+            used_program=(str(used_predictor.program) if used_predictor else None),
+        )
 
         if self.cfg.verbose:
             eprint(
