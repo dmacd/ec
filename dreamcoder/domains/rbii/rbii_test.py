@@ -27,9 +27,9 @@ def run_sequence(name: str, seq: str) -> None:
         pool_target_size=3,
         validation_window=6,
         min_time=3,            # enough history for k=0,1,2 lookbacks
-        enum_timeout_s=0.6,
+        enum_timeout_s=5, #0.6,
         eval_timeout_s=0.02,
-        upper_bound=30.0,
+        upper_bound=200.0, # 30,
         budget_increment=1.5,
         max_frontier=10,
         verbose=True,
@@ -69,7 +69,8 @@ def main():
     # Simple predictable sequences
     run_sequence("all_a", "aaaaaaaaaaaaaaaaaaaa")
     run_sequence("alternating_ab", "abababababababababab")
-    run_sequence("runs_of_3", "aaabbbcccdddeeeaaabbbcccdddeee")
+    run_sequence("runs_of_3",
+                 "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee")
 
 
 if __name__ == "__main__":

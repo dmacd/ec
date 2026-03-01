@@ -11,11 +11,19 @@ x get hist could look at the future!!!
             that a callable can be constructed
 
 - review new test results...some weird failures??
-  - make a nice plot of which programs enter the pool and when (and frozen 
+  x make a nice plot of which programs enter the pool and when (and frozen 
     store)
-  - how is the pool used for prediction? - just takes the first program for now
+  x how is the pool used for prediction? - just takes the first program for now
 - runs of 3 test: should have recovered some predictors in the second half...
-  - is this because of task duplicate filtering??
+  x is this because of task duplicate filtering??
+  - increase budget and timeout -> doesnt help
+  - debug: dump enum when we fail to find solution
+  - may need to add a few more primitives
+    - get absolute hist obs
+    - get timestep
+    - arithmetic
+  - auto-run graph gen 
+  - log runs to separate folders with timestamps
 
 
 
