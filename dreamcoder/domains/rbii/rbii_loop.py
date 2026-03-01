@@ -21,6 +21,22 @@ from .rbii_types import RBIIEvalState, trbii_state
 # allow duplicate programs to re-enter the pool
 ALLOW_DUPLICATES = True
 
+
+class CollectingLikelihoodModel:
+    """
+    Wrapper that records every program scored by the underlying likelihood model.
+    """
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.tried_programs: List[str] = []
+        self.tried_program_objects: List[Program] = []
+
+    def score(self, program, task):
+        self.tried_programs.append(str(program))
+        self.tried_program_objects.append(program)
+        return self.inner.score(program, task)
+
 @dataclass
 class Predictor:
     program: Program
@@ -96,6 +112,49 @@ class RBIILoop:
                 used_program=None,
                 warmup=True,
             )
+
+    def _write_failed_enumeration_programs(
+        self,
+        current_index: int,
+        task_name: str,
+        request,
+        tried_programs: List[str],
+        tried_program_objects: List[Program],
+        total_number_of_programs: int,
+    ) -> Optional[str]:
+        if not self.cfg.event_log_dir:
+            return None
+
+        os.makedirs(self.cfg.event_log_dir, exist_ok=True)
+        path = os.path.join(
+            self.cfg.event_log_dir,
+            f"enumeration_t{current_index:04d}.json",
+        )
+        tried_program_records = []
+        for program_str, program_obj in zip(tried_programs, tried_program_objects):
+            description_length = None
+            try:
+                description_length = -float(self.g.logLikelihood(request, program_obj))
+            except Exception:
+                description_length = None
+            tried_program_records.append(
+                {
+                    "program": program_str,
+                    "description_length": description_length,
+                }
+            )
+
+        payload = {
+            "timestep": current_index,
+            "task_name": task_name,
+            "num_programs_scored": len(tried_programs),
+            "num_programs_enumerated": int(total_number_of_programs),
+            "programs_tried": tried_programs,
+            "programs_tried_with_description_length": tried_program_records,
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, sort_keys=True, indent=2)
+        return path
 
     def _log_event(self, event: str, **payload) -> None:
         if self._event_fp is None:
@@ -252,9 +311,11 @@ class RBIILoop:
 
         need = self.cfg.pool_target_size - len(self.pool)
 
-        lm = AllOrNothingLikelihoodModel(timeout=self.cfg.eval_timeout_s)
+        lm = CollectingLikelihoodModel(
+            AllOrNothingLikelihoodModel(timeout=self.cfg.eval_timeout_s)
+        )
 
-        frontiers, _, _ = enumerateForTasks(
+        frontiers, _, total_number_of_programs = enumerateForTasks(
             self.g,
             [task],
             lm,
@@ -271,6 +332,22 @@ class RBIILoop:
         frontier = frontiers[task]
 
         if frontier.empty:
+            programs_path = self._write_failed_enumeration_programs(
+                current_index=current_index,
+                task_name=task.name,
+                request=task.request,
+                tried_programs=lm.tried_programs,
+                tried_program_objects=lm.tried_program_objects,
+                total_number_of_programs=total_number_of_programs,
+            )
+            self._log_event(
+                "enumeration_no_solution",
+                timestep=current_index,
+                task_name=task.name,
+                num_programs_scored=len(lm.tried_programs),
+                num_programs_enumerated=int(total_number_of_programs),
+                programs_file=programs_path,
+            )
             if self.cfg.verbose:
                 eprint(f"  refill: no solutions for {task.name}")
             return
