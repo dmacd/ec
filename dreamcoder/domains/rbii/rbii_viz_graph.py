@@ -31,6 +31,7 @@ class EpisodeLayout:
     episode: ProgramEpisode
     label: str
     bracket_x: float
+    router_x: float
     y1: float
     y2: float
     desired_center: float
@@ -395,8 +396,6 @@ def _layout_episode_boxes(
             y1, y2 = y2, y1
 
         bracket_x = bracket_x0 + (ep.lane * lane_step)
-        x_elbow = bracket_x + connector_len
-        box_x = x_elbow + label_gap
         desired_center = (y1 + y2) / 2.0
 
         text_w = _estimate_text_width_px(label, font_size)
@@ -408,14 +407,27 @@ def _layout_episode_boxes(
                 episode=ep,
                 label=label,
                 bracket_x=bracket_x,
+                router_x=0.0,
                 y1=y1,
                 y2=y2,
                 desired_center=desired_center,
                 box_w=box_w,
                 box_h=box_h,
-                box_x=box_x,
+                box_x=0.0,
             )
         )
+
+    if not layouts:
+        return layouts
+
+    # Use a shared connector routing corridor left of all boxes.
+    max_bracket_x = max(x.bracket_x for x in layouts)
+    router_x = max_bracket_x + max(14.0, lane_step * 0.6)
+    box_x = router_x + max(30.0, connector_len) + label_gap
+
+    for item in layouts:
+        item.router_x = router_x
+        item.box_x = box_x
 
     # Ensure boxes never overlap and keep at least min_box_margin vertical gap.
     ordered = sorted(layouts, key=lambda x: (x.desired_center, x.box_x))
@@ -550,7 +562,7 @@ def _render_svg(
     for item in episode_layouts:
         ep = item.episode
         x = item.bracket_x
-        x_elbow = x + connector_len
+        x_router = item.router_x
         stroke = "#5f5f5f"
         line_w = 2.1 if ep.used_for_prediction else 1.5
         line_dash = "" if ep.used_for_prediction else ' stroke-dasharray="3 3"'
@@ -562,9 +574,9 @@ def _render_svg(
             f'fill="none" stroke="{stroke}" stroke-width="{line_w:.1f}"{line_dash}/>'
         )
         parts.append(
-            f'<path d="M {x:.1f} {item.anchor_y:.1f} H {x_elbow:.1f} '
+            f'<path d="M {x:.1f} {item.anchor_y:.1f} H {x_router:.1f} '
             f'V {item.box_center_y:.1f} H {item.box_x:.1f}" '
-            f'fill="none" stroke="{stroke}" stroke-width="{line_w:.1f}"/>'
+            f'fill="none" stroke="{stroke}" stroke-width="{line_w:.1f}"{line_dash}/>'
         )
 
         box_dash = ' stroke-dasharray="1.5 3.5" stroke-linecap="round"' if ep.duplicate_candidate else ""
