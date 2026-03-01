@@ -26,6 +26,8 @@ x get hist could look at the future!!!
   - log runs to separate folders with timestamps
 
 
+- start 
+
 
 ## later
 - ditch triple eq
