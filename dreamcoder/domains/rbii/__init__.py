@@ -3,7 +3,8 @@
 Minimal RBII prototype domain (Python-only) for the ec/DreamCoder repo.
 
 Files:
-- rbii_state.py      : RBIIState + global state handle used by primitives
-- rbii_primitives.py : DSL primitives + grammar builder
+- rbii_types.py      : explicit RBII task input type + state protocol
+- rbii_state.py      : RBIIState + causal per-timestep state views
+- rbii_primitives.py : DSL primitives + grammar builder (explicit state input)
 - rbii_loop.py       : minimal RBII loop with pool eviction/refill
 """

@@ -2,44 +2,39 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, List, Sequence
 
 from dreamcoder.grammar import Grammar
 from dreamcoder.program import Primitive
 from dreamcoder.type import (
   arrow,
-  baseType,
   t0,
   tbool,
   tcharacter,
   tint,
 )
 
-from .rbii_state import get_global_state
+from .rbii_types import RBIIEvalState, trbii_state
 
 
 # ---- Primitive implementations (Python values) ----
 
 def _get_historical_obs(k: int):
   """
-  Returns a function (t:int) -> char that reads the kth previous observation
-  relative to prediction time t.
+  Returns a function (state:rbii_state) -> char that reads the kth previous
+  observation relative to state.timestep.
 
   Semantics:
-    get_historical_obs(k)(t) = obs_history[t - 1 - k]
+    get_historical_obs(k)(state) = state.obs_at(state.timestep - 1 - k)
 
   So:
     k=0 -> "most recent observed char before time t"
     k=1 -> "char 2 steps back", etc.
   """
 
-  def inner(t: int) -> str:
-    s = get_global_state()
-    idx = (t - 1) - k
-    if idx < 0 or idx >= len(s.obs_history):
-      raise IndexError(
-        f"obs idx out of range: t={t} k={k} idx={idx} len={len(s.obs_history)}")
-    return s.obs_history[idx]
+  def inner(state: RBIIEvalState) -> str:
+    idx = (state.timestep - 1) - k
+    return state.obs_at(idx)
 
   return inner
 
@@ -47,21 +42,18 @@ def _get_historical_obs(k: int):
 
 def _get_historical_program_abs(k: int):
   """
-  Returns a function (t:int) -> char that delegates to the k-th stored "best"
-  program by *absolute index* in best_programs.
+  Returns a function (state:rbii_state) -> char that delegates to the k-th
+  stored "best" program by absolute index.
 
   Semantics:
-    get_historical_program(k)(t) = best_programs[k](t)
+    get_historical_program(k)(state) = state.program_at(k)(state)
 
   This keeps program references stable as the list grows.
   """
 
-  def inner(t: int) -> str:
-    s = get_global_state()
-    if k < 0 or k >= len(s.compiled_programs):
-      raise IndexError(
-        f"program idx out of range: k={k} len={len(s.compiled_programs)}")
-    return s.compiled_programs[k](t)
+  def inner(state: RBIIEvalState) -> str:
+    fn = state.program_at(k)
+    return fn(state)
 
   return inner
 
@@ -129,11 +121,11 @@ def make_rbii_grammar(
   Minimal grammar for predicting characters from history.
 
   Request type we target in the RBII tests:
-    int -> char
+    rbii_state -> char
 
   Core ideas:
-    - get_historical_obs(k) returns (int -> char)
-    - get_historical_program(k) returns (int -> char) by absolute program id
+    - get_historical_obs(k) returns (rbii_state -> char)
+    - get_historical_program(k) returns (rbii_state -> char) by absolute id
     - triple_eq + if + succ_char allow easy discovery of run-length-3 patterns
     - get_historical_obs(1) solves simple alternation (ababab...)
     - get_historical_obs(0) solves constant sequences after warmup (aaaa...)
@@ -146,20 +138,20 @@ def make_rbii_grammar(
   for i in range(cfg.max_int + 1):
     prims.append(_primitive(str(i), tint, i))
 
-  # historical observation lookup: int -> int -> char
+  # historical observation lookup: int -> rbii_state -> char
   prims.append(
     _primitive(
       "get_historical_obs",
-      arrow(tint, tint, tcharacter),
+      arrow(tint, trbii_state, tcharacter),
       _get_historical_obs,
     )
   )
 
-  # stored program lookup (absolute): int -> int -> char
+  # stored program lookup (absolute): int -> rbii_state -> char
   prims.append(
     _primitive(
       "get_historical_program",
-      arrow(tint, tint, tcharacter),
+      arrow(tint, trbii_state, tcharacter),
       _get_historical_program_abs,
     )
   )

@@ -9,7 +9,7 @@ from dreamcoder.utilities import eprint
 
 from dreamcoder.domains.rbii.rbii_primitives import RBIIPrimitiveConfig, make_rbii_grammar
 from dreamcoder.domains.rbii.rbii_loop import RBIIConfig, RBIILoop
-from dreamcoder.domains.rbii.rbii_state import RBIIState, set_global_state
+from dreamcoder.domains.rbii.rbii_state import RBIIState
 
 
 def run_sequence(name: str, seq: str) -> None:
@@ -18,7 +18,7 @@ def run_sequence(name: str, seq: str) -> None:
     eprint(f"  {seq}")
     eprint("=" * 80)
 
-    # Build grammar once per run (primitives use global state).
+    # Build grammar once per run.
     g = make_rbii_grammar(RBIIPrimitiveConfig(alphabet="abcde", max_int=6, log_variable=0.0))
 
     cfg = RBIIConfig(
@@ -34,7 +34,6 @@ def run_sequence(name: str, seq: str) -> None:
     )
 
     state = RBIIState()
-    set_global_state(state)
 
     # Warmup: seed with the first min_time characters.
     warmup = min(cfg.min_time, len(seq))
