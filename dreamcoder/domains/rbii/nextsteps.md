@@ -16,8 +16,8 @@ x get hist could look at the future!!!
   x how is the pool used for prediction? - just takes the first program for now
 - runs of 3 test: should have recovered some predictors in the second half...
   x is this because of task duplicate filtering??
-  - increase budget and timeout -> doesnt help
-  - debug: dump enum when we fail to find solution
+  x increase budget and timeout -> doesnt help
+  x debug: dump enum when we fail to find solution
   - may need to add a few more primitives
     - get absolute hist obs
     - get timestep
