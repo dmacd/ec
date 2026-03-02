@@ -18,13 +18,16 @@ x get hist could look at the future!!!
   x is this because of task duplicate filtering??
   x increase budget and timeout -> doesnt help
   x debug: dump enum when we fail to find solution
-  - may need to add a few more primitives
-    - get absolute hist obs
-    - get timestep
-    - arithmetic
-  - auto-run graph gen 
-  - log runs to separate folders with timestamps
+  x may need to add a few more primitives
+    x get absolute hist obs
+    x get timestep
+    x arithmetic
+  x auto-run graph gen 
+  x log runs to separate folders with timestamps
 
+- why isnt enumerate running in parallel?
+
+- Arthur's test case: 
 
 - start 
 

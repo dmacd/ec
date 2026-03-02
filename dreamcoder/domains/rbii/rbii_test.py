@@ -8,11 +8,28 @@ import os
 import subprocess
 import sys
 
+from dreamcoder.enumeration import EnumerationDebugHook
 from dreamcoder.utilities import eprint
 
 from dreamcoder.domains.rbii.rbii_primitives import RBIIPrimitiveConfig, make_rbii_grammar
 from dreamcoder.domains.rbii.rbii_loop import RBIIConfig, RBIILoop
 from dreamcoder.domains.rbii.rbii_state import RBIIState
+
+
+class _FileEnumerationDebugHook(EnumerationDebugHook):
+    def __init__(self, log_path: str):
+        self.log_path = log_path
+
+    def on_program(self, **payload):
+        dt = float(payload.get("dt", 0.0))
+        likelihood = payload.get("likelihood")
+        program = payload.get("program")
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write(f"{dt:.6f}\t{likelihood}\t{program}\n")
+
+    def on_end(self, **_payload):
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write("-------\n")
 
 
 def _next_run_subdir(base_dir: str) -> str:
@@ -31,6 +48,15 @@ def _next_run_subdir(base_dir: str) -> str:
     run_dir = os.path.join(base_dir, f"run_{max_idx + 1:04d}")
     os.makedirs(run_dir, exist_ok=False)
     return run_dir
+
+
+def _make_enum_debug_hook_factory(log_path: str):
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+    def hook_factory(_current_index: int, _task):
+        return _FileEnumerationDebugHook(log_path)
+
+    return hook_factory
 
 
 def run_sequence(name: str, seq: str, event_log_dir: str) -> None:
@@ -68,7 +94,13 @@ def run_sequence(name: str, seq: str, event_log_dir: str) -> None:
 
     eprint(f"Warmup seeded obs_history[:{warmup}] = {''.join(state.obs_history)!r}")
 
-    rbii = RBIILoop(grammar=g, state=state, cfg=cfg)
+    enum_debug_log_path = os.path.join(event_log_dir, f"{name}_enumerate_debug.log")
+    rbii = RBIILoop(
+        grammar=g,
+        state=state,
+        cfg=cfg,
+        enumeration_debug_hooks_factory=_make_enum_debug_hook_factory(enum_debug_log_path),
+    )
 
     # Online loop: at each step observe the next symbol.
     for i in range(warmup, len(seq)):

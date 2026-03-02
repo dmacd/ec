@@ -7,7 +7,11 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Callable, List, Optional, Set
 
-from dreamcoder.enumeration import enumerateForTasks
+from dreamcoder.enumeration import (
+    EnumerationDebugHook,
+    NOOP_ENUMERATION_DEBUG_HOOK,
+    enumerateForTasks,
+)
 from dreamcoder.likelihoodModel import AllOrNothingLikelihoodModel
 from dreamcoder.program import Program
 from dreamcoder.task import Task
@@ -76,10 +80,19 @@ class RBIILoop:
         finite validation window of recent observations.
     """
 
-    def __init__(self, grammar, state: RBIIState, cfg: RBIIConfig = RBIIConfig()):
+    def __init__(
+        self,
+        grammar,
+        state: RBIIState,
+        cfg: RBIIConfig = RBIIConfig(),
+        enumeration_debug_hooks_factory: Optional[
+            Callable[[int, Task], EnumerationDebugHook]
+        ] = None,
+    ):
         self.g = grammar
         self.state = state
         self.cfg = cfg
+        self._enumeration_debug_hooks_factory = enumeration_debug_hooks_factory
         self.pool: List[Predictor] = []
         self._seen_program_strs: Set[str] = set()
         self._seen_candidate_program_strs: Set[str] = set()
@@ -314,6 +327,11 @@ class RBIILoop:
         lm = CollectingLikelihoodModel(
             AllOrNothingLikelihoodModel(timeout=self.cfg.eval_timeout_s)
         )
+        enumeration_debug_hook = NOOP_ENUMERATION_DEBUG_HOOK
+        if self._enumeration_debug_hooks_factory is not None:
+            enumeration_debug_hook = self._enumeration_debug_hooks_factory(
+                current_index, task
+            )
 
         frontiers, _, total_number_of_programs = enumerateForTasks(
             self.g,
@@ -328,6 +346,7 @@ class RBIILoop:
             testing=False,
             elapsedTime=0.0,
             CPUs=1,
+            enumeration_debug_hook=enumeration_debug_hook,
         )
         frontier = frontiers[task]
 

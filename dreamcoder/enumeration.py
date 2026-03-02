@@ -515,6 +515,21 @@ def bottom_up_parallel_worker(g, pcfg, pps, tasks, timeout, maximumFrontiers,
 class EnumerationTimeout(Exception):
     pass
 
+
+class EnumerationDebugHook:
+    def on_start(self, **_payload):
+        return None
+
+    def on_program(self, **_payload):
+        return None
+
+    def on_end(self, **_payload):
+        return None
+
+
+NOOP_ENUMERATION_DEBUG_HOOK = EnumerationDebugHook()
+
+
 def enumerateForTasks(g, tasks, likelihoodModel, _=None,
                       verbose=False,
                       timeout=None,
@@ -524,7 +539,8 @@ def enumerateForTasks(g, tasks, likelihoodModel, _=None,
                       evaluationTimeout=None,
                       lowerBound=0.,
                       upperBound=100.,
-                      budgetIncrement=1.0, maximumFrontiers=None):
+                      budgetIncrement=1.0, maximumFrontiers=None,
+                      enumeration_debug_hook=NOOP_ENUMERATION_DEBUG_HOOK):
     assert timeout is not None, \
         "enumerateForTasks: You must provide a timeout."
 
@@ -534,10 +550,6 @@ def enumerateForTasks(g, tasks, likelihoodModel, _=None,
     assert all(t.request == request for t in tasks), \
         "enumerateForTasks: Expected tasks to all have the same type"
 
-    debug_log_path = os.path.join("experimentOutputs", "enumerateForTasks_debug.log")
-    os.makedirs(os.path.dirname(debug_log_path), exist_ok=True)
-    debug_fp = open(debug_log_path, "a", encoding="utf-8")
-
     maximumFrontiers = [maximumFrontiers[t] for t in tasks]
     # store all of the hits in a priority queue
     # we will never maintain maximumFrontier best solutions
@@ -546,63 +558,76 @@ def enumerateForTasks(g, tasks, likelihoodModel, _=None,
     starting = time()
     previousBudget = lowerBound
     budget = lowerBound + budgetIncrement
+    totalNumberOfPrograms = 0
     try:
-        try:
-            totalNumberOfPrograms = 0
-            while time() < starting + timeout and \
-                    any(len(h) < mf for h, mf in zip(hits, maximumFrontiers)) and \
-                    budget <= upperBound:
-                numberOfPrograms = 0
+        while time() < starting + timeout and \
+                any(len(h) < mf for h, mf in zip(hits, maximumFrontiers)) and \
+                budget <= upperBound:
+            numberOfPrograms = 0
 
-                debug_fp.write(f"Budget: {previousBudget}->{budget:.2f}\n")
-                for prior, _, p in g.enumeration(Context.EMPTY, [], request,
-                                                 maximumDepth=99,
-                                                 upperBound=budget,
-                                                 lowerBound=previousBudget):
-                    descriptionLength = -prior
-                    # Shouldn't see it on this iteration
-                    assert descriptionLength <= budget
-                    # Should already have seen it
-                    assert descriptionLength > previousBudget
+            enumeration_debug_hook.on_start(
+                previous_budget=previousBudget,
+                budget=budget,
+                request=request,
+                elapsed_time=elapsedTime,
+            )
+            for prior, _, p in g.enumeration(Context.EMPTY, [], request,
+                                             maximumDepth=99,
+                                             upperBound=budget,
+                                             lowerBound=previousBudget):
+                descriptionLength = -prior
+                # Shouldn't see it on this iteration
+                assert descriptionLength <= budget
+                # Should already have seen it
+                assert descriptionLength > previousBudget
 
-                    numberOfPrograms += 1
-                    totalNumberOfPrograms += 1
+                numberOfPrograms += 1
+                totalNumberOfPrograms += 1
 
-                    for n in range(len(tasks)):
-                        task = tasks[n]
+                for n in range(len(tasks)):
+                    task = tasks[n]
 
-                        #Warning:changed to max's new likelihood model situation
-                        #likelihood = task.logLikelihood(p, evaluationTimeout)
-                        #if invalid(likelihood):
-                            #continue
-                        success, likelihood = likelihoodModel.score(p, task)
-                        dt = time() - starting + elapsedTime
-                        debug_fp.write(
-                          f"{dt:.6f}\t{success}\t{likelihood}\t{p}\n")
-                        if not success:
-                            continue
+                    #Warning:changed to max's new likelihood model situation
+                    #likelihood = task.logLikelihood(p, evaluationTimeout)
+                    #if invalid(likelihood):
+                        #continue
+                    success, likelihood = likelihoodModel.score(p, task)
+                    dt = time() - starting + elapsedTime
+                    enumeration_debug_hook.on_program(
+                        dt=dt,
+                        success=success,
+                        likelihood=likelihood,
+                        program=p,
+                        task=task,
+                        prior=prior,
+                        description_length=(-prior),
+                    )
+                    if not success:
+                        continue
 
-                        priority = -(likelihood + prior)
-                        hits[n].push(priority,
-                                     (dt, FrontierEntry(program=p,
-                                                        logLikelihood=likelihood,
-                                                        logPrior=prior)))
-                        if len(hits[n]) > maximumFrontiers[n]:
-                            hits[n].popMaximum()
+                    priority = -(likelihood + prior)
+                    hits[n].push(priority,
+                                 (dt, FrontierEntry(program=p,
+                                                    logLikelihood=likelihood,
+                                                    logPrior=prior)))
+                    if len(hits[n]) > maximumFrontiers[n]:
+                        hits[n].popMaximum()
 
-                    if timeout is not None and time() - starting > timeout:
-                        raise EnumerationTimeout
+                if timeout is not None and time() - starting > timeout:
+                    raise EnumerationTimeout
 
-                previousBudget = budget
-                budget += budgetIncrement
+            previousBudget = budget
+            budget += budgetIncrement
 
-                if budget > upperBound:
-                    break
-        except EnumerationTimeout:
-            pass
-    finally:
-        debug_fp.write("-------\n")
-        debug_fp.close()
+            if budget > upperBound:
+                break
+    except EnumerationTimeout:
+        pass
+
+    enumeration_debug_hook.on_end(
+        total_number_of_programs=totalNumberOfPrograms,
+    )
+
     frontiers = {tasks[n]: Frontier([e for _, e in hits[n]],
                                     task=tasks[n])
                  for n in range(len(tasks))}
@@ -611,7 +636,4 @@ def enumerateForTasks(g, tasks, likelihoodModel, _=None,
         min(t for t,_ in hits[n]) for n in range(len(tasks))}
 
     return frontiers, searchTimes, totalNumberOfPrograms
-
-
-
 
