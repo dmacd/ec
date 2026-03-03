@@ -68,11 +68,14 @@ def run_sequence(name: str, seq: str, event_log_dir: str) -> None:
     # Build grammar once per run.
     g = make_rbii_grammar(RBIIPrimitiveConfig(alphabet="abcde", max_int=6, log_variable=0.0))
 
+    total_cpus = os.cpu_count() or 1
+    enum_cpus = max(1, (total_cpus * 3) // 4)
+
     cfg = RBIIConfig(
         pool_target_size=3,
         validation_window=6,
         min_time=3,            # enough history for k=0,1,2 lookbacks
-        enum_timeout_s=300,
+        enum_timeout_s=3,
         # enum_timeout_s=0.6,
         eval_timeout_s=0.02,
         upper_bound=200,
@@ -83,6 +86,9 @@ def run_sequence(name: str, seq: str, event_log_dir: str) -> None:
         event_log_dir=event_log_dir,
         event_log_name=name,
         log_candidate_events=True,
+        enum_solver="bottom",
+        enum_cpus=enum_cpus,
+        enum_bottom_compile_me=False,
     )
 
     state = RBIIState()
@@ -94,12 +100,22 @@ def run_sequence(name: str, seq: str, event_log_dir: str) -> None:
 
     eprint(f"Warmup seeded obs_history[:{warmup}] = {''.join(state.obs_history)!r}")
 
-    enum_debug_log_path = os.path.join(event_log_dir, f"{name}_enumerate_debug.log")
+    if cfg.verbose:
+        eprint(
+            f"Enumeration solver={cfg.enum_solver} "
+            f"compile_me={cfg.enum_bottom_compile_me} cpus={cfg.enum_cpus}/{total_cpus}"
+        )
+
+    enum_debug_factory = None
+    if cfg.enum_solver == "python":
+        enum_debug_log_path = os.path.join(event_log_dir, f"{name}_enumerate_debug.log")
+        enum_debug_factory = _make_enum_debug_hook_factory(enum_debug_log_path)
+
     rbii = RBIILoop(
         grammar=g,
         state=state,
         cfg=cfg,
-        enumeration_debug_hooks_factory=_make_enum_debug_hook_factory(enum_debug_log_path),
+        enumeration_debug_hooks_factory=enum_debug_factory,
     )
 
     # Online loop: at each step observe the next symbol.

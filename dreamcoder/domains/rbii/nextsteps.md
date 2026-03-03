@@ -24,8 +24,16 @@ x get hist could look at the future!!!
     x arithmetic
   x auto-run graph gen 
   x log runs to separate folders with timestamps
+  x cleaned up enum debug 
 
-- why isnt enumerate running in parallel?
+- conditional eval...does it actually make sense? not see any ifs in the 
+  enum, might be that we can compile it out 
+  - make an "if" that isnt detected as conditional so we do eval both paths
+    at runtime?
+  - BETTER: print out programs in pre-compiled state
+
+- why isn't enumerate running in parallel?
+
 
 - Arthur's test case: 
 

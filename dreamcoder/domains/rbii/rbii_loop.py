@@ -11,6 +11,7 @@ from dreamcoder.enumeration import (
     EnumerationDebugHook,
     NOOP_ENUMERATION_DEBUG_HOOK,
     enumerateForTasks,
+    solveForTask_bottom,
 )
 from dreamcoder.likelihoodModel import AllOrNothingLikelihoodModel
 from dreamcoder.program import Program
@@ -64,6 +65,9 @@ class RBIIConfig:
     upper_bound: float = 30.0
     budget_increment: float = 1.5
     max_frontier: int = 10
+    enum_solver: str = "python"  # "python" or "bottom"
+    enum_cpus: int = 1
+    enum_bottom_compile_me: bool = False
 
     verbose: bool = True
     event_log_dir: Optional[str] = None
@@ -324,30 +328,54 @@ class RBIILoop:
 
         need = self.cfg.pool_target_size - len(self.pool)
 
-        lm = CollectingLikelihoodModel(
-            AllOrNothingLikelihoodModel(timeout=self.cfg.eval_timeout_s)
-        )
-        enumeration_debug_hook = NOOP_ENUMERATION_DEBUG_HOOK
-        if self._enumeration_debug_hooks_factory is not None:
-            enumeration_debug_hook = self._enumeration_debug_hooks_factory(
-                current_index, task
-            )
+        tried_programs: List[str] = []
+        tried_program_objects: List[Program] = []
+        num_programs_scored = 0
 
-        frontiers, _, total_number_of_programs = enumerateForTasks(
-            self.g,
-            [task],
-            lm,
-            timeout=self.cfg.enum_timeout_s,
-            lowerBound=0.0,
-            upperBound=float(self.cfg.upper_bound),
-            budgetIncrement=float(self.cfg.budget_increment),
-            maximumFrontiers={task: int(self.cfg.max_frontier)},
-            verbose=False,
-            testing=False,
-            elapsedTime=0.0,
-            CPUs=1,
-            enumeration_debug_hook=enumeration_debug_hook,
-        )
+        if self.cfg.enum_solver == "bottom":
+            frontiers, _, total_number_of_programs = solveForTask_bottom(
+                g=self.g,
+                tasks=[task],
+                lowerBound=0.0,
+                upperBound=float(self.cfg.upper_bound),
+                budgetIncrement=float(self.cfg.budget_increment),
+                timeout=self.cfg.enum_timeout_s,
+                CPUs=max(1, int(self.cfg.enum_cpus)),
+                likelihoodModel=None,
+                evaluationTimeout=self.cfg.eval_timeout_s,
+                maximumFrontiers={task: int(self.cfg.max_frontier)},
+                testing=False,
+                compile_me=bool(self.cfg.enum_bottom_compile_me),
+            )
+        else:
+            lm = CollectingLikelihoodModel(
+                AllOrNothingLikelihoodModel(timeout=self.cfg.eval_timeout_s)
+            )
+            enumeration_debug_hook = NOOP_ENUMERATION_DEBUG_HOOK
+            if self._enumeration_debug_hooks_factory is not None:
+                enumeration_debug_hook = self._enumeration_debug_hooks_factory(
+                    current_index, task
+                )
+
+            frontiers, _, total_number_of_programs = enumerateForTasks(
+                self.g,
+                [task],
+                lm,
+                timeout=self.cfg.enum_timeout_s,
+                lowerBound=0.0,
+                upperBound=float(self.cfg.upper_bound),
+                budgetIncrement=float(self.cfg.budget_increment),
+                maximumFrontiers={task: int(self.cfg.max_frontier)},
+                verbose=False,
+                testing=False,
+                elapsedTime=0.0,
+                CPUs=1,
+                enumeration_debug_hook=enumeration_debug_hook,
+            )
+            tried_programs = lm.tried_programs
+            tried_program_objects = lm.tried_program_objects
+            num_programs_scored = len(lm.tried_programs)
+
         frontier = frontiers[task]
 
         if frontier.empty:
@@ -355,15 +383,15 @@ class RBIILoop:
                 current_index=current_index,
                 task_name=task.name,
                 request=task.request,
-                tried_programs=lm.tried_programs,
-                tried_program_objects=lm.tried_program_objects,
+                tried_programs=tried_programs,
+                tried_program_objects=tried_program_objects,
                 total_number_of_programs=total_number_of_programs,
             )
             self._log_event(
                 "enumeration_no_solution",
                 timestep=current_index,
                 task_name=task.name,
-                num_programs_scored=len(lm.tried_programs),
+                num_programs_scored=num_programs_scored,
                 num_programs_enumerated=int(total_number_of_programs),
                 programs_file=programs_path,
             )
