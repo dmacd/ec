@@ -104,10 +104,10 @@ def test_bottom_solver_parallel_smoke_or_skip():
     assert total > 0
 
 
-def test_succ_char_primitive_value_is_not_picklable():
+def test_succ_char_primitive_value_is_picklable():
     """
-    Captures the root cause behind bottom-solver multiprocessing failure:
-    succ_char primitive value is a nested closure and cannot be pickled.
+    Regression test for multiprocessing: succ_char primitive value must be
+    picklable and preserve behavior after roundtrip.
     """
     import pickle
     from dreamcoder.domains.rbii.rbii_primitives import RBIIPrimitiveConfig, make_rbii_grammar
@@ -122,14 +122,16 @@ def test_succ_char_primitive_value_is_not_picklable():
             break
 
     assert succ_primitive is not None
-    with pytest.raises(AttributeError, match=r"_succ_char\.<locals>\.f"):
-        pickle.dumps(succ_primitive.value)
+    payload = pickle.dumps(succ_primitive.value)
+    recovered = pickle.loads(payload)
+    assert recovered("a") == "b"
+    assert recovered("b") == "b"
 
 
-def test_bottom_solver_parallel_reports_succ_char_pickling_error_or_skip():
+def test_bottom_solver_parallel_handles_alternating_ab_window_or_skip():
     """
-    Captures the observed multiprocessing failure mode in bottom solver:
-    MaybeEncodingError caused by non-picklable succ_char closure.
+    Parallel bottom solver on the previously failing alternating_ab window
+    should not raise MaybeEncodingError from succ_char pickling.
     """
     import multiprocessing.pool as mp_pool
     from dreamcoder.enumeration import solveForTask_bottom
@@ -139,7 +141,7 @@ def test_bottom_solver_parallel_reports_succ_char_pickling_error_or_skip():
     from dreamcoder.domains.rbii.rbii_types import trbii_state
     from dreamcoder import utilities as dc_utils
 
-    # Mirrors the failing alternating_ab window startup: history "aba", predict "b".
+    # Former failure case from rbii_test: history "aba", predict "b".
     grammar = make_rbii_grammar(
         RBIIPrimitiveConfig(alphabet="ab", max_int=2, log_variable=0.0)
     )
@@ -153,7 +155,7 @@ def test_bottom_solver_parallel_reports_succ_char_pickling_error_or_skip():
     )
 
     try:
-        solveForTask_bottom(
+        _frontiers, _search_times, total = solveForTask_bottom(
             g=grammar,
             tasks=[task],
             lowerBound=0.0,
@@ -172,11 +174,9 @@ def test_bottom_solver_parallel_reports_succ_char_pickling_error_or_skip():
         dc_utils.PARALLELBASESEED = None
         pytest.skip("multiprocessing semaphores unavailable in this environment")
     except mp_pool.MaybeEncodingError as e:
-        msg = str(e)
-        assert "_succ_char.<locals>.f" in msg
-        return
+        pytest.fail(f"Unexpected multiprocessing encoding failure: {e}")
 
-    pytest.fail("Expected bottom parallel run to raise MaybeEncodingError for succ_char pickling")
+    assert total > 0
 
 
 def test_rbii_loop_bottom_mode_runs_without_debug_hooks(tmp_path):
@@ -222,3 +222,53 @@ def test_rbii_loop_bottom_mode_runs_without_debug_hooks(tmp_path):
     loop.close()
 
     assert state.time() == 4
+
+
+def test_rbii_loop_bottom_parallel_survives_second_refill_or_skip(tmp_path):
+    """
+    Regression: with bottom+parallel, second refill used to fail when Task
+    examples captured RBIIState containing non-picklable compiled lambdas.
+    """
+    import multiprocessing.pool as mp_pool
+    from dreamcoder import utilities as dc_utils
+    from dreamcoder.domains.rbii.rbii_loop import RBIIConfig, RBIILoop
+    from dreamcoder.domains.rbii.rbii_primitives import RBIIPrimitiveConfig, make_rbii_grammar
+
+    grammar = make_rbii_grammar(
+        RBIIPrimitiveConfig(alphabet="ab", max_int=2, log_variable=0.0)
+    )
+    state = _seed_state("aba")
+    cfg = RBIIConfig(
+        pool_target_size=3,
+        validation_window=2,
+        min_time=3,
+        enum_timeout_s=1.0,
+        eval_timeout_s=0.02,
+        upper_bound=12.0,
+        budget_increment=1.5,
+        max_frontier=10,
+        enum_solver="bottom",
+        enum_cpus=2,
+        enum_bottom_compile_me=False,
+        verbose=False,
+        event_log_dir=str(tmp_path),
+        event_log_name="rbii_bottom_parallel_second_refill",
+        log_candidate_events=True,
+    )
+
+    loop = RBIILoop(grammar=grammar, state=state, cfg=cfg)
+    try:
+        # First update populates pool and state.best_programs at t=3.
+        loop.observe_and_update("b")
+        # Second update triggers another refill at t=4 with existing programs.
+        loop.observe_and_update("a")
+    except PermissionError:
+        dc_utils.PARALLELMAPDATA = None
+        dc_utils.PARALLELBASESEED = None
+        pytest.skip("multiprocessing semaphores unavailable in this environment")
+    except mp_pool.MaybeEncodingError as e:
+        pytest.fail(f"Unexpected multiprocessing encoding failure: {e}")
+    finally:
+        loop.close()
+
+    assert state.time() == 5

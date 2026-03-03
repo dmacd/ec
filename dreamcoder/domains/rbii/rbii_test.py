@@ -75,7 +75,7 @@ def run_sequence(name: str, seq: str, event_log_dir: str) -> None:
         pool_target_size=3,
         validation_window=6,
         min_time=3,            # enough history for k=0,1,2 lookbacks
-        enum_timeout_s=3,
+        enum_timeout_s=.6,
         # enum_timeout_s=0.6,
         eval_timeout_s=0.02,
         upper_bound=200,

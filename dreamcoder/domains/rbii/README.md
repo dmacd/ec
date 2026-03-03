@@ -31,27 +31,21 @@ That run directory includes:
 ./ve/bin/python -m pytest -q dreamcoder/domains/rbii/tests/test_bottom_solver_integration.py
 ```
 
-## Current bottom-solver multiprocessing failure (diagnosis)
+## Bottom-solver multiprocessing notes
 
-When running `rbii_test` with:
+Parallel bottom solver (`enum_solver="bottom"`, `enum_cpus > 1`) sends worker
+results through Python multiprocessing pickling. Two classes of serialization
+issues mattered for RBII:
 
-- `enum_solver="bottom"`
-- `enum_bottom_compile_me=False`
-- `enum_cpus > 1`
+- non-picklable primitive values (fixed for `succ_char`)
+- non-picklable runtime caches inside state views (`compiled_programs` lambdas)
 
-the run can fail in multiprocessing result transport with:
+These are now addressed in the RBII domain by:
 
-```text
-MaybeEncodingError: ... Can't pickle local object '_succ_char.<locals>.f'
-```
+- defining `succ_char` with a top-level picklable callable class
+- serializing `RBIIState` without compiled lambda caches and recompiling on load
 
-### Why this happens
+If a new primitive adds local/nested closures as primitive values, parallel
+bottom solver can regress. See:
 
-`solveForTask_bottom` parallelizes with `multiprocessing.Pool` and must pickle worker results to send them back to the parent process.  
-Some returned programs include the `succ_char` primitive value implemented as a nested closure (`_succ_char.<locals>.f`), which is not picklable by default in this path.
-
-### Practical workaround
-
-Use serial bottom enumeration (`enum_cpus=1`) or switch to the Python enumerator mode.
-
-If you want to keep bottom solver + multiprocessing, `succ_char` should be reworked to use a picklable top-level callable (or equivalent serialization-safe primitive implementation).
+- `dreamcoder/domains/rbii/tests/test_bottom_solver_integration.py`

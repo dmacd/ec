@@ -58,23 +58,31 @@ def _get_historical_program_abs(k: int):
   return inner
 
 
-def _succ_char(alphabet: Sequence[str]):
+class _SuccCharFn:
+  """
+  Picklable callable used as the succ_char primitive value.
+  """
+
+  def __init__(self, mapping: Dict[str, str]):
+    self.mapping = dict(mapping)
+
+  def __call__(self, c: str) -> str:
+    if not (isinstance(c, str) and len(c) == 1):
+      raise ValueError(f"expected char, got {c!r}")
+    if c not in self.mapping:
+      # If outside the alphabet, just leave it unchanged for robustness.
+      return c
+    return self.mapping[c]
+
+
+def _succ_char(alphabet: Sequence[str]) -> _SuccCharFn:
   succ: Dict[str, str] = {}
   for i, c in enumerate(alphabet):
     if i + 1 < len(alphabet):
       succ[c] = alphabet[i + 1]
     else:
       succ[c] = alphabet[i]  # clamp at end
-
-  def f(c: str) -> str:
-    if not (isinstance(c, str) and len(c) == 1):
-      raise ValueError(f"expected char, got {c!r}")
-    if c not in succ:
-      # If outside the alphabet, just leave it unchanged for robustness.
-      return c
-    return succ[c]
-
-  return f
+  return _SuccCharFn(succ)
 
 
 def _eq_char(a: str):

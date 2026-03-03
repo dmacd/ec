@@ -64,6 +64,24 @@ class RBIIState:
     )
     program_birth_timestep: List[int] = field(default_factory=list)
 
+    def __getstate__(self):
+        """
+        Make state picklable for multiprocessing transport.
+        Compiled callables are runtime cache only and are not serializable.
+        """
+        return {
+            "obs_history": list(self.obs_history),
+            "best_programs": list(self.best_programs),
+            "program_birth_timestep": list(self.program_birth_timestep),
+        }
+
+    def __setstate__(self, state):
+        self.obs_history = list(state.get("obs_history", []))
+        self.best_programs = list(state.get("best_programs", []))
+        self.program_birth_timestep = list(state.get("program_birth_timestep", []))
+        # Rebuild runtime cache of compiled callables.
+        self.compiled_programs = [p.evaluate([]) for p in self.best_programs]
+
     def observe(self, symbol: str) -> None:
         assert isinstance(symbol, str) and len(symbol) == 1, symbol
         self.obs_history.append(symbol)

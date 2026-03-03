@@ -32,13 +32,22 @@ x get hist could look at the future!!!
     at runtime?
   - BETTER: print out programs in pre-compiled state
 
-- why isn't enumerate running in parallel?
+x why isn't enumerate running in parallel?
+  x ported to bottom-up solver
+- restore enum debug hooks
+   
 
 
 - Arthur's test case: 
+  - make a longer random string
+  - add prims that could output characters not just succ-char
 
-- start 
-
+    
+## paper plots
+- test case illustrations
+  - in order to show recovery times, we'll have to mesh the enumeration 
+    schedule differently
+    - ideas: 
 
 ## later
 - ditch triple eq
@@ -48,6 +57,7 @@ x get hist could look at the future!!!
 - add an explicit reflection of the state timestep so that get_historical 
   can be used to reference a fixed index in constant bits
 
+- add frozen program store to the timeline plot
 
 
 ## ideas
