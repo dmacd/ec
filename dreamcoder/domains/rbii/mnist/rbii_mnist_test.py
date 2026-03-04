@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 import bin.binutil  # noqa: F401
 
@@ -27,7 +30,39 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--eval-timeout", type=float, default=0.05)
     p.add_argument("--max-frontier", type=int, default=12)
     p.add_argument("--verbose", action="store_true", default=False)
+    p.add_argument("--viz", action="store_true", default=True, help="Render SVG timeline after run")
+    p.add_argument("--no-viz", dest="viz", action="store_false")
+    p.add_argument("--viz-output-dir", default=os.path.join("experimentOutputs", "rbii_mnist_viz"))
     return p.parse_args()
+
+
+def render_timeline_viz(log_path: str, output_dir: str) -> Path | None:
+    if not log_path:
+        return None
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "dreamcoder.domains.rbii.rbii_viz_graph",
+        log_path,
+        "--output-dir",
+        output_dir,
+        "--show-timestep-labels",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        if proc.stdout.strip():
+            eprint(proc.stdout.strip())
+        if proc.stderr.strip():
+            eprint(proc.stderr.strip())
+        eprint("Timeline visualization failed.")
+        return None
+
+    if proc.stdout.strip():
+        eprint(proc.stdout.strip())
+
+    stem = Path(log_path).stem
+    return Path(output_dir) / f"{stem}.svg"
 
 
 def main() -> None:
@@ -112,6 +147,12 @@ def main() -> None:
     eprint(f"  mean_logloss_bits={summary['mean_logloss_bits']:.4f}")
     eprint(f"  event_log={loop.event_log_path}")
     eprint(f"  metrics_json={loop.metrics_path}")
+
+    svg_path = None
+    if args.viz and loop.event_log_path:
+        svg_path = render_timeline_viz(loop.event_log_path, args.viz_output_dir)
+        if svg_path is not None:
+            eprint(f"  timeline_svg={svg_path}")
 
     returns = summary.get("reacquisition", {}).get("returns", [])
     if returns:

@@ -186,6 +186,15 @@ class MNISTRBIILoop:
         if valid:
             used_program_id = valid[0][0].program_id
             used_program = str(valid[0][0].program)
+            used_pred_label = argmax_label(valid[0][1])
+            self._log_event(
+                "predict_used",
+                timestep=t,
+                program_id=used_program_id,
+                program=used_program,
+                predicted=str(int(used_pred_label)),
+                observed=str(int(y)),
+            )
 
         self._log_event(
             "predict",
@@ -239,6 +248,8 @@ class MNISTRBIILoop:
             "observe",
             timestep=t,
             context=str(context),
+            observed=str(int(y)),
+            predicted=str(int(pred_label)),
             y_true=int(y),
             y_hat=int(pred_label),
             logloss_bits=float(bits_mix),
