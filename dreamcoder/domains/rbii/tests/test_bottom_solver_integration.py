@@ -179,11 +179,12 @@ def test_bottom_solver_parallel_handles_alternating_ab_window_or_skip():
     assert total > 0
 
 
-def test_rbii_loop_bottom_mode_runs_without_debug_hooks(tmp_path):
+def test_rbii_loop_bottom_mode_uses_debug_hooks(tmp_path):
     """
-    Integration test: run one actual RBII update in bottom mode and ensure
-    debug hooks are not touched.
+    Integration test: run one RBII update in bottom mode and ensure
+    enumeration debug hooks are wired through.
     """
+    from dreamcoder.enumeration import EnumerationDebugHook
     from dreamcoder.domains.rbii.rbii_loop import RBIIConfig, RBIILoop
     from dreamcoder.domains.rbii.rbii_primitives import RBIIPrimitiveConfig, make_rbii_grammar
     grammar = make_rbii_grammar(
@@ -209,19 +210,34 @@ def test_rbii_loop_bottom_mode_runs_without_debug_hooks(tmp_path):
         log_candidate_events=True,
     )
 
-    def fail_if_called(_current_index, _task):
-        raise AssertionError("debug hook factory should not be used in bottom mode")
+    class RecordingHook(EnumerationDebugHook):
+        def __init__(self):
+            self.program_calls = 0
+            self.end_calls = 0
+
+        def on_program(self, **_payload):
+            self.program_calls += 1
+
+        def on_end(self, **_payload):
+            self.end_calls += 1
+
+    hook = RecordingHook()
+
+    def make_hook(_current_index, _task):
+        return hook
 
     loop = RBIILoop(
         grammar=grammar,
         state=state,
         cfg=cfg,
-        enumeration_debug_hooks_factory=fail_if_called,
+        enumeration_debug_hooks_factory=make_hook,
     )
     loop.observe_and_update("a")
     loop.close()
 
     assert state.time() == 4
+    assert hook.program_calls > 0
+    assert hook.end_calls > 0
 
 
 def test_rbii_loop_bottom_parallel_survives_second_refill_or_skip(tmp_path):

@@ -20,6 +20,10 @@ class _FileEnumerationDebugHook(EnumerationDebugHook):
     def __init__(self, log_path: str):
         self.log_path = log_path
 
+    def for_worker(self, worker_id):
+        root, ext = os.path.splitext(self.log_path)
+        return _FileEnumerationDebugHook(f"{root}.worker_{worker_id}{ext}")
+
     def on_program(self, **payload):
         dt = float(payload.get("dt", 0.0))
         likelihood = payload.get("likelihood")
@@ -75,7 +79,7 @@ def run_sequence(name: str, seq: str, event_log_dir: str) -> None:
         pool_target_size=3,
         validation_window=6,
         min_time=3,            # enough history for k=0,1,2 lookbacks
-        enum_timeout_s=.6,
+        enum_timeout_s=3,
         # enum_timeout_s=0.6,
         eval_timeout_s=0.02,
         upper_bound=200,
@@ -106,10 +110,8 @@ def run_sequence(name: str, seq: str, event_log_dir: str) -> None:
             f"compile_me={cfg.enum_bottom_compile_me} cpus={cfg.enum_cpus}/{total_cpus}"
         )
 
-    enum_debug_factory = None
-    if cfg.enum_solver == "python":
-        enum_debug_log_path = os.path.join(event_log_dir, f"{name}_enumerate_debug.log")
-        enum_debug_factory = _make_enum_debug_hook_factory(enum_debug_log_path)
+    enum_debug_log_path = os.path.join(event_log_dir, f"{name}_enumerate_debug.log")
+    enum_debug_factory = _make_enum_debug_hook_factory(enum_debug_log_path)
 
     rbii = RBIILoop(
         grammar=g,
@@ -183,6 +185,12 @@ def main():
     run_sequence("runs_of_3",
                  "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
                  run_event_log_dir)
+    # run_sequence("runs_of_increasing",
+    #              "aaabbbcccdddeee"
+    #                   "aaaabbbbccccddddeeee"
+    #                   "aaaaabbbbbcccccdddddeeeee"
+    #                   "aaaaaabbbbbbccccccddddddeeeeee",
+    #              run_event_log_dir)
     _render_viz_for_run(run_event_log_dir)
 
 

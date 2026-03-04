@@ -393,7 +393,11 @@ def solveForTask_bottom(_=None,
                         CPUs=1,
                         likelihoodModel=None,
                         evaluationTimeout=None, maximumFrontiers=None, testing=False,
-                        compile_me=True):
+                        compile_me=True,
+                        enumeration_debug_hook=None):
+    if enumeration_debug_hook is None:
+        enumeration_debug_hook = NOOP_ENUMERATION_DEBUG_HOOK
+
     if compile_me:
         return callCompiled(solveForTask_bottom,
                             elapsedTime=elapsedTime,
@@ -405,6 +409,7 @@ def solveForTask_bottom(_=None,
                             evaluationTimeout=evaluationTimeout,
                             maximumFrontiers=maximumFrontiers, testing=testing,
                             compile_me=False,
+                            enumeration_debug_hook=enumeration_debug_hook,
                             #profile="tower_profile"
         )
 
@@ -426,10 +431,11 @@ def solveForTask_bottom(_=None,
     pcfg = PCFG.from_grammar(g, request).number_rules() # a pcfg
 
     splits = pcfg.split(CPUs)
+    worker_hooks = [enumeration_debug_hook.for_worker(i) for i in range(len(splits))]
 
     results = parallelMap(CPUs, 
-                          lambda pps: bottom_up_parallel_worker(g, pcfg, pps, tasks, timeout, maximumFrontiers, evaluationTimeout=evaluationTimeout),
-                          splits)
+                          lambda pps, hook: bottom_up_parallel_worker(g, pcfg, pps, tasks, timeout, maximumFrontiers, evaluationTimeout=evaluationTimeout, enumeration_debug_hook=hook),
+                          splits, worker_hooks)
     number_of_programs = sum(np for _, np in results )
     eprint("Enumerated", number_of_programs, "programs")
     
@@ -448,8 +454,11 @@ def solveForTask_bottom(_=None,
 
 
 def bottom_up_parallel_worker(g, pcfg, pps, tasks, timeout, maximumFrontiers,
-                              evaluationTimeout=None):
+                              evaluationTimeout=None,
+                              enumeration_debug_hook=None):
     from time import time
+    if enumeration_debug_hook is None:
+        enumeration_debug_hook = NOOP_ENUMERATION_DEBUG_HOOK
     
     maximumFrontiers = [maximumFrontiers[t] for t in tasks]
     # store all of the hits in a priority queue
@@ -459,6 +468,12 @@ def bottom_up_parallel_worker(g, pcfg, pps, tasks, timeout, maximumFrontiers,
     starting = time()
 
     totalNumberOfPrograms=0
+    enumeration_debug_hook.on_start(
+        previous_budget=None,
+        budget=None,
+        request=tasks[0].request if tasks else None,
+        elapsed_time=0.0,
+    )
 
     for e in pcfg.quantized_enumeration(skeletons=pps):
         totalNumberOfPrograms+=1
@@ -472,13 +487,23 @@ def bottom_up_parallel_worker(g, pcfg, pps, tasks, timeout, maximumFrontiers,
             task = tasks[n]
 
             likelihood = task.logLikelihood(e, evaluationTimeout)
+            dt = time() - starting
+            success = not invalid(likelihood)
+            enumeration_debug_hook.on_program(
+                dt=dt,
+                success=success,
+                likelihood=likelihood,
+                program=e,
+                task=task,
+                prior=prior,
+                description_length=(None if prior is None else -prior),
+            )
             if invalid(likelihood):
                 continue
 
             if prior is None:
                 prior = g.logLikelihood(tasks[0].request, e)
 
-            dt = time() - starting
             priority = -(likelihood + prior)
             hits[n].push(priority,
                          (dt, FrontierEntry(program=e,
@@ -510,6 +535,10 @@ def bottom_up_parallel_worker(g, pcfg, pps, tasks, timeout, maximumFrontiers,
         min((-f.logPrior-f.logLikelihood, t) for t,f in hits[n])[1]
         for n in range(len(tasks))}
 
+    enumeration_debug_hook.on_end(
+        total_number_of_programs=totalNumberOfPrograms,
+    )
+
     return frontiers, totalNumberOfPrograms
 
 class EnumerationTimeout(Exception):
@@ -517,6 +546,9 @@ class EnumerationTimeout(Exception):
 
 
 class EnumerationDebugHook:
+    def for_worker(self, _worker_id):
+        return self
+
     def on_start(self, **_payload):
         return None
 
@@ -636,4 +668,3 @@ def enumerateForTasks(g, tasks, likelihoodModel, _=None,
         min(t for t,_ in hits[n]) for n in range(len(tasks))}
 
     return frontiers, searchTimes, totalNumberOfPrograms
-

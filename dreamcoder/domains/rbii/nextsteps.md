@@ -26,16 +26,19 @@ x get hist could look at the future!!!
   x log runs to separate folders with timestamps
   x cleaned up enum debug 
 
-- conditional eval...does it actually make sense? not see any ifs in the 
-  enum, might be that we can compile it out 
-  - make an "if" that isnt detected as conditional so we do eval both paths
-    at runtime?
-  - BETTER: print out programs in pre-compiled state
 
 x why isn't enumerate running in parallel?
   x ported to bottom-up solver
 - restore enum debug hooks
    
+
+- conditional eval...does it actually make sense? not see any ifs in the 
+  enum, might be that we can compile it out 
+  - make an "if" that isnt detected as conditional so we do eval both paths
+    at runtime?
+  - BETTER: print out programs in pre-compiled state
+  - get this working before trying MNIST which might require functioning 
+    branches
 
 
 - Arthur's test case: 
@@ -78,3 +81,15 @@ x why isn't enumerate running in parallel?
       that way
       - draw lines for popular samples
       - then make movies of this evolution!
+
+
+## MNIST path
+- run it
+- look at program store
+- port to bottom solver
+
+
+- exciting experiment:
+  - equip neural path with knn lookups and a broader set of options for 
+    selection compute graphs and params...then see what kind of crazy things 
+    it comes up with!   

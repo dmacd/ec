@@ -331,6 +331,11 @@ class RBIILoop:
         tried_programs: List[str] = []
         tried_program_objects: List[Program] = []
         num_programs_scored = 0
+        enumeration_debug_hook = NOOP_ENUMERATION_DEBUG_HOOK
+        if self._enumeration_debug_hooks_factory is not None:
+            enumeration_debug_hook = self._enumeration_debug_hooks_factory(
+                current_index, task
+            )
 
         if self.cfg.enum_solver == "bottom":
             frontiers, _, total_number_of_programs = solveForTask_bottom(
@@ -346,17 +351,12 @@ class RBIILoop:
                 maximumFrontiers={task: int(self.cfg.max_frontier)},
                 testing=False,
                 compile_me=bool(self.cfg.enum_bottom_compile_me),
+                enumeration_debug_hook=enumeration_debug_hook,
             )
         else:
             lm = CollectingLikelihoodModel(
                 AllOrNothingLikelihoodModel(timeout=self.cfg.eval_timeout_s)
             )
-            enumeration_debug_hook = NOOP_ENUMERATION_DEBUG_HOOK
-            if self._enumeration_debug_hooks_factory is not None:
-                enumeration_debug_hook = self._enumeration_debug_hooks_factory(
-                    current_index, task
-                )
-
             frontiers, _, total_number_of_programs = enumerateForTasks(
                 self.g,
                 [task],
