@@ -29,7 +29,7 @@ x get hist could look at the future!!!
 
 x why isn't enumerate running in parallel?
   x ported to bottom-up solver
-- restore enum debug hooks
+x restore enum debug hooks
    
 
 - conditional eval...does it actually make sense? not see any ifs in the 

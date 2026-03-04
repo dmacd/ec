@@ -7,6 +7,7 @@ import bin.binutil  # alt import if called as module
 import os
 import subprocess
 import sys
+import random
 
 from dreamcoder.enumeration import EnumerationDebugHook
 from dreamcoder.utilities import eprint
@@ -180,17 +181,31 @@ def main():
     eprint(f"Run output dir: {run_event_log_dir}")
 
     # Simple predictable sequences
-    run_sequence("all_a", "aaaaaaaaaaaaaaaaaaaa", run_event_log_dir)
-    run_sequence("alternating_ab", "abababababababababab", run_event_log_dir)
-    run_sequence("runs_of_3",
-                 "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
-                 run_event_log_dir)
+    # run_sequence("all_a", "aaaaaaaaaaaaaaaaaaaa", run_event_log_dir)
+    # run_sequence("alternating_ab", "abababababababababab", run_event_log_dir)
+    # run_sequence("runs_of_3",
+    #              "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
+    #              run_event_log_dir)
     # run_sequence("runs_of_increasing",
     #              "aaabbbcccdddeee"
     #                   "aaaabbbbccccddddeeee"
     #                   "aaaaabbbbbcccccdddddeeeee"
     #                   "aaaaaabbbbbbccccccddddddeeeeee",
     #              run_event_log_dir)
+
+    # sequence that forces conditional to be the best
+
+    random.seed(0)
+    def _random_sequence(length: int, alphabet: str) -> str:
+        return "".join(random.choices(alphabet, k=length))
+
+    run_sequence("force_if",
+                 "".join(
+                   ["aaab"+_random_sequence(random.randint(1,5), "cde")
+                          for _ in range(10)]),
+                 run_event_log_dir)
+
+
     _render_viz_for_run(run_event_log_dir)
 
 
