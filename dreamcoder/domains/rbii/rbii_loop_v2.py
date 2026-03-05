@@ -69,7 +69,6 @@ class CandidateContext:
     task: Task
     state: RBIIState
     pool: Sequence[PoolPredictor]
-    candidate_buffer: Sequence[CandidateProposal]
     cfg: "RBIIConfigV2"
 
 
@@ -135,7 +134,11 @@ class RBIIConfigV2:
 
     exploration_min_batch: int = 1
     exploration_surplus_batch: int = 0
-    candidate_buffer_cap: int = 64
+
+    # Candidate passes compression-cost gate when:
+    #   compression_gain + compression_gain_slack_bits > witness_bits
+    # Larger values are more permissive.
+    compression_gain_slack_bits: float = 0.0
 
     mispredict_penalty: float = 0.1
 
@@ -237,6 +240,7 @@ class MDLDetectabilityPolicy:
     Current version keeps the policy simple:
     - estimates candidate loss on the current validation window
     - computes MDL score = loss + witness_bits
+    - filters out candidates whose compression gain does not exceed bit-cost
     - assigns a comparable insertion weight to every scored candidate
       via Z * 2^{-MDL score}
     """
@@ -253,6 +257,11 @@ class MDLDetectabilityPolicy:
         if current_mass <= 0.0:
             current_mass = 1.0
 
+        start = max(int(ctx.cfg.min_time), int(ctx.timestep) - int(ctx.cfg.validation_window) + 1)
+        if start > int(ctx.timestep):
+            return []
+        baseline_bits = float(ctx.timestep - start + 1)
+
         ranked: List[tuple[float, CandidateProposal]] = []
         for cand in candidates:
             loss = self._window_loss_bits(ctx, cand)
@@ -262,6 +271,10 @@ class MDLDetectabilityPolicy:
             k_hat = float(cand.witness_bits)
             if k_hat < 0.0:
                 raise ValueError(f"witness_bits must be non-negative; got {k_hat}.")
+            compression_gain = baseline_bits - float(loss)
+            effective_gain = compression_gain + float(ctx.cfg.compression_gain_slack_bits)
+            if effective_gain <= k_hat:
+                continue
             score = float(loss + k_hat)
             ranked.append((score, cand))
 
@@ -358,7 +371,6 @@ class RBIILoopV2:
         self.freeze_policy = freeze_policy or AlwaysFreezeIncumbentPolicy()
 
         self.pool: List[PoolPredictor] = []
-        self.candidate_buffer: List[CandidateProposal] = []
         self._frozen_program_id_by_key: Dict[str, int] = {}
         for i, p in enumerate(self.state.best_programs):
             k = str(p)
@@ -422,22 +434,16 @@ class RBIILoopV2:
         )
         proposals = self.enumerator.propose_batch(explore_ctx)
 
-        if self.cfg.candidate_buffer_cap > 0:
-            self.candidate_buffer.extend(proposals)
-            if len(self.candidate_buffer) > int(self.cfg.candidate_buffer_cap):
-                self.candidate_buffer = self.candidate_buffer[-int(self.cfg.candidate_buffer_cap) :]
-
         candidate_ctx = CandidateContext(
             timestep=timestep,
             grammar=self.g,
             task=task,
             state=self.state,
             pool=list(self.pool),
-            candidate_buffer=list(self.candidate_buffer),
             cfg=self.cfg,
         )
         admissions = self.candidate_policy.admit_and_weight(
-            candidate_ctx, list(self.candidate_buffer)
+            candidate_ctx, proposals
         )
 
         self._rerank_pool_and_candidates(admissions, timestep=timestep)
@@ -485,7 +491,6 @@ class RBIILoopV2:
         target = int(self.cfg.pool_target_size)
         if target <= 0:
             self.pool = []
-            self.candidate_buffer = []
             return
 
         ranked_pool = sorted(self.pool, key=lambda p: p.weight, reverse=True)
@@ -501,7 +506,6 @@ class RBIILoopV2:
         competition.sort(key=lambda item: item[1], reverse=True)
 
         new_pool: List[PoolPredictor] = []
-        selected_candidate_ids: Set[int] = set()
         selected_program_keys: Set[str] = set()
         for kind, weight, pp, adm in competition:
             if len(new_pool) >= target:
@@ -542,14 +546,9 @@ class RBIILoopV2:
                     duplicate_candidate=False,
                 )
             )
-            selected_candidate_ids.add(id(cand))
             selected_program_keys.add(cand_key)
 
         self.pool = new_pool
-        if selected_candidate_ids:
-            self.candidate_buffer = [
-                c for c in self.candidate_buffer if id(c) not in selected_candidate_ids
-            ]
 
     def _current_incumbent(self) -> Optional[PoolPredictor]:
         if not self.pool:

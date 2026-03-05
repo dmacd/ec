@@ -77,6 +77,11 @@ x restore enum debug hooks
   - is the candidate buffer getting rolled over??
     - no, we're just looking at the last -n:0 after extending it on each search
     - this blows, lets nuke it and start over each cycle
+  - MDL filter missing? 
+    x need explicit computation of compression gain 
+    - slack param
+    - need to generalize to non-binary observations
+       
     
 ## paper plots
 - test case illustrations

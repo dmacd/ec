@@ -31,9 +31,10 @@ The active pool and frozen store are intentionally separate concerns.
    - `None` is not treated as a normal case.
    - Bottom-solver proposals should raise if witness bits cannot be derived.
 
-4. Candidate scoring runs over the entire candidate buffer (not only fresh
-   proposals).
-   - The loop passes the full buffered set to `CandidateWeightPolicy`.
+4. There is no persistent candidate buffer in V2.
+   - Candidates are proposal batches for the current step only.
+   - Do not reintroduce a buffer-capacity hyperparameter unless explicitly
+     requested.
 
 5. Pool update is a global rerank of:
    - existing pool members (with current weights), and
@@ -55,6 +56,13 @@ The active pool and frozen store are intentionally separate concerns.
 9. No separate authoritative frozen program list in the loop.
    - The authoritative frozen store is `RBIIState.best_programs`.
 
+10. Candidate filtering must enforce the manuscript criterion:
+    - admit only candidates whose compression gain exceeds their bit-cost.
+    - current policy uses `compression_gain = baseline_bits - loss_bits` and
+      requires `compression_gain + compression_gain_slack_bits > witness_bits`.
+    - `compression_gain_slack_bits` is a global permissiveness control (higher is
+      more permissive).
+
 ## Current Per-Step Flow
 
 At each observed symbol:
@@ -64,11 +72,11 @@ At each observed symbol:
 3. Append observation to `RBIIState`.
 4. Build validation task/window (when past `min_time`).
 5. Enumerate proposals (`EnumerationController`).
-6. Append proposals to candidate buffer (capped by `candidate_buffer_cap`).
-7. Score and weight full buffer (`CandidateWeightPolicy`).
-8. Rerank pool + candidates together; keep best `pool_target_size`.
-9. Update incumbent tracker.
-10. Freeze according to `FreezePolicy` (only here can frozen store change).
+6. Score and weight current-step proposals (`CandidateWeightPolicy`), including
+   compression-gain-vs-cost filtering.
+7. Rerank pool + candidates together; keep best `pool_target_size`.
+8. Update incumbent tracker.
+9. Freeze according to `FreezePolicy` (only here can frozen store change).
 
 ## Notes on Keying and Duplicates
 
@@ -89,7 +97,7 @@ Current bottom-solver adapter is intentionally narrow:
 ## Open Work / Next Milestones
 
 1. Replace simple candidate weight formula with the exact policy intended for the
-   experiment (while preserving full-buffer rerank semantics).
+   experiment (while preserving global rerank semantics).
 2. Introduce explicit transformer-search enumerator implementation behind the
    same `EnumerationController` interface.
 3. Add event logging for V2 decisions (candidate score, global rank position,
@@ -97,7 +105,7 @@ Current bottom-solver adapter is intentionally narrow:
 4. Add focused tests for:
    - no pool insertion on duplicate candidate,
    - freeze-only writes to `best_programs`,
-   - full-buffer rerank behavior across multiple timesteps.
+   - global rerank behavior across multiple timesteps.
 
 ## Guidance for Future Codex Sessions
 
