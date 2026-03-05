@@ -36,6 +36,7 @@ class Predictor:
     fn: Callable[[MNISTEvalState], MNISTPrediction]
     source: str = "enumerated"
     program_id: Optional[int] = None
+    duplicate_candidate: bool = False
     cum_loss_bits: float = 0.0
 
 
@@ -59,6 +60,7 @@ class MNISTRBIIConfig:
     event_log_dir: str = os.path.join("experimentOutputs", "rbii_mnist_events")
     event_log_name: str = "rbii_mnist"
     log_candidate_events: bool = True
+    allow_duplicates: bool = True
 
 
 class MNISTRBIILoop:
@@ -69,6 +71,10 @@ class MNISTRBIILoop:
 
         self.pool: List[Predictor] = []
         self._seen_program_strs: Set[str] = set()
+        self._seen_candidate_program_strs: Set[str] = set()
+        self._candidate_events: int = 0
+        self._duplicate_candidate_events: int = 0
+        self._duplicate_readds: int = 0
 
         self.metrics = OnlineMNISTMetrics()
 
@@ -101,6 +107,15 @@ class MNISTRBIILoop:
 
     def close(self) -> None:
         if self._event_fp is not None:
+            self._log_event(
+                "run_stats",
+                timestep=self.state.time(),
+                candidate_events=self._candidate_events,
+                duplicate_candidate_events=self._duplicate_candidate_events,
+                duplicate_readds=self._duplicate_readds,
+                unique_program_texts=len(self._seen_program_strs),
+                seen_candidate_texts=len(self._seen_candidate_program_strs),
+            )
             self._log_event("run_end", timestep=self.state.time())
             self._event_fp.close()
             self._event_fp = None
@@ -114,6 +129,15 @@ class MNISTRBIILoop:
             self.close()
         except Exception:
             pass
+
+    def duplicate_stats(self) -> Dict[str, int]:
+        return {
+            "candidate_events": self._candidate_events,
+            "duplicate_candidate_events": self._duplicate_candidate_events,
+            "duplicate_readds": self._duplicate_readds,
+            "unique_program_texts": len(self._seen_program_strs),
+            "seen_candidate_texts": len(self._seen_candidate_program_strs),
+        }
 
     def _predictor_key(self, p: Program) -> str:
         return str(p)
@@ -192,6 +216,7 @@ class MNISTRBIILoop:
                 timestep=t,
                 program_id=used_program_id,
                 program=used_program,
+                duplicate_candidate=bool(valid[0][0].duplicate_candidate),
                 predicted=str(int(used_pred_label)),
                 observed=str(int(y)),
             )
@@ -221,6 +246,7 @@ class MNISTRBIILoop:
                     timestep=t,
                     program_id=pp.program_id,
                     program=str(pp.program),
+                    duplicate_candidate=bool(pp.duplicate_candidate),
                     reason="invalid_prediction",
                 )
                 continue
@@ -237,6 +263,7 @@ class MNISTRBIILoop:
                     timestep=t,
                     program_id=pp.program_id,
                     program=str(pp.program),
+                    duplicate_candidate=bool(pp.duplicate_candidate),
                     reason="high_logloss",
                     logloss_bits=float(bits_i),
                 )
@@ -332,19 +359,44 @@ class MNISTRBIILoop:
 
             p = entry.program
             k = self._predictor_key(p)
+            duplicate_candidate = k in self._seen_candidate_program_strs
+            self._candidate_events += 1
+            if duplicate_candidate:
+                self._duplicate_candidate_events += 1
+            self._seen_candidate_program_strs.add(k)
 
             if self.cfg.log_candidate_events:
                 self._log_event(
                     "candidate",
                     timestep=current_index,
                     program=str(p),
+                    duplicate_candidate=duplicate_candidate,
+                    seen_in_pool_history=(k in self._seen_program_strs),
                     log_likelihood=float(entry.logLikelihood),
                     log_prior=float(entry.logPrior),
                 )
 
-            # Keep pool diverse in this first pass.
             if k in self._seen_program_strs:
-                continue
+                if self.cfg.allow_duplicates:
+                    self._duplicate_readds += 1
+                    self._log_event(
+                        "candidate_readded",
+                        timestep=current_index,
+                        program=str(p),
+                        duplicate_candidate=duplicate_candidate,
+                        reason="seen_in_pool_history",
+                    )
+                    if self.cfg.verbose:
+                        eprint(f"  [mnist refill] re-adding duplicate program {p}")
+                else:
+                    self._log_event(
+                        "candidate_rejected",
+                        timestep=current_index,
+                        program=str(p),
+                        duplicate_candidate=duplicate_candidate,
+                        reason="seen_in_pool_history",
+                    )
+                    continue
 
             try:
                 fn = p.evaluate([])
@@ -353,6 +405,7 @@ class MNISTRBIILoop:
                     "candidate_rejected",
                     timestep=current_index,
                     program=str(p),
+                    duplicate_candidate=duplicate_candidate,
                     reason="compile_failed",
                 )
                 continue
@@ -364,6 +417,7 @@ class MNISTRBIILoop:
                     fn=fn,
                     source="enumerated",
                     program_id=program_id,
+                    duplicate_candidate=duplicate_candidate,
                     cum_loss_bits=0.0,
                 )
             )
@@ -375,6 +429,7 @@ class MNISTRBIILoop:
                 timestep=current_index,
                 program_id=program_id,
                 program=str(p),
+                duplicate_candidate=duplicate_candidate,
             )
 
             if self.cfg.verbose:

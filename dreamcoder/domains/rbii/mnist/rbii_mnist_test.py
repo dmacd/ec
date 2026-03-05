@@ -24,7 +24,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--data-dir", default="data/mnist")
     p.add_argument("--download", action="store_true", default=True)
     p.add_argument("--no-download", dest="download", action="store_false")
-    p.add_argument("--per-context", type=int, default=150)
+    p.add_argument("--per-context", type=int, default=500)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--synthetic", action="store_true", help="Use synthetic offline stream instead of MNIST")
     p.add_argument("--enum-timeout", type=float, default=1.0)
@@ -109,7 +109,7 @@ def main() -> None:
         eval_timeout = min(eval_timeout, 0.02)
         max_frontier = min(max_frontier, 8)
 
-    schedule = ("A", "B", "A", "B")
+    schedule = ("A", "B", "A", "B",) * 10
 
     if args.synthetic:
         eprint("Building synthetic return stream...")
@@ -170,11 +170,15 @@ def main() -> None:
         loop.close()
 
     summary = loop.metrics.summary()
+    duplicate_stats = loop.duplicate_stats()
 
     eprint("\nRun complete")
     eprint(f"  total_steps={summary['n']}")
     eprint(f"  accuracy={summary['accuracy']:.4f}")
     eprint(f"  mean_logloss_bits={summary['mean_logloss_bits']:.4f}")
+    eprint(f"  candidates_seen={duplicate_stats['candidate_events']}")
+    eprint(f"  duplicate_candidates={duplicate_stats['duplicate_candidate_events']}")
+    eprint(f"  duplicate_readds={duplicate_stats['duplicate_readds']}")
     eprint(f"  event_log={loop.event_log_path}")
     eprint(f"  metrics_json={loop.metrics_path}")
 
