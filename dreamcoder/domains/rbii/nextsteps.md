@@ -51,8 +51,32 @@ x restore enum debug hooks
   - add prims that could output characters not just succ-char
 
 
+## full RBII loop
 
-
+- baseline_bits == val_window? NO...its the validation
+  - > assumes each observation is worth one bit, which isnt true
+    > but does it matter? with fixed finite alphabet and boolean 
+    > comparisons
+  - TODO: refactor with distribution-typed outputs
+  x weird: cand.witness bits should NEVER be none!! thats an exception
+  x using hard min_weight cutoff - not what I want
+  - candidate buffer cap...wtf? then i have to align this with the proposal 
+    batch size...which...ugh. no. fuck this
+  x I also want to support a mode where we just search for stuff...and if it 
+    is more worthy than what's in the pool, we add it
+  
+  - shouldn't the window loss have been computed by the solver for the task!?
+  - why is rerank so overwrought?? i should jush have a list of programs and 
+    scores....sort and take...really???
+  x dont add duplicates to the pool if they are already there
+  x wtf? why are we adding to best programs every candidate???
+  x why are we normalizing pool weights????? is that in teh manuescript?
+  x frozen programs are what should be store in the state, not the RBIILoop!
+    - candidates should not get recorded in best/frozen programs automatically
+    
+  - is the candidate buffer getting rolled over??
+    - no, we're just looking at the last -n:0 after extending it on each search
+    - this blows, lets nuke it and start over each cycle
     
 ## paper plots
 - test case illustrations
