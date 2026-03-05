@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import bin.binutil  # noqa: F401
 
@@ -32,11 +33,38 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--verbose", action="store_true", default=False)
     p.add_argument("--viz", action="store_true", default=True, help="Render SVG timeline after run")
     p.add_argument("--no-viz", dest="viz", action="store_false")
-    p.add_argument("--viz-output-dir", default=os.path.join("experimentOutputs", "rbii_mnist_viz"))
+    p.add_argument(
+        "--output-root",
+        default=os.path.join("experimentOutputs", "rbii_mnist_events"),
+        help="Root directory where numbered run_XXXX folders are created.",
+    )
+    p.add_argument(
+        "--viz-output-dir",
+        default=None,
+        help="Optional override for visualization output dir. Defaults to run dir.",
+    )
     return p.parse_args()
 
 
-def render_timeline_viz(log_path: str, output_dir: str) -> Path | None:
+def _next_run_subdir(base_dir: str) -> str:
+    os.makedirs(base_dir, exist_ok=True)
+    max_idx = 0
+    for entry in os.listdir(base_dir):
+        p = os.path.join(base_dir, entry)
+        if not os.path.isdir(p):
+            continue
+        if not entry.startswith("run_"):
+            continue
+        suffix = entry[len("run_") :]
+        if not suffix.isdigit():
+            continue
+        max_idx = max(max_idx, int(suffix))
+    run_dir = os.path.join(base_dir, f"run_{max_idx + 1:04d}")
+    os.makedirs(run_dir, exist_ok=False)
+    return run_dir
+
+
+def render_timeline_viz(log_path: str, output_dir: str) -> Optional[Path]:
     if not log_path:
         return None
 
@@ -67,6 +95,8 @@ def render_timeline_viz(log_path: str, output_dir: str) -> Path | None:
 
 def main() -> None:
     args = parse_args()
+    run_dir = _next_run_subdir(args.output_root)
+    eprint(f"Run output dir: {run_dir}")
 
     per_context = args.per_context
     enum_timeout = args.enum_timeout
@@ -125,7 +155,7 @@ def main() -> None:
         evict_max_bits=3.5,
         weight_temperature=1.0,
         verbose=bool(args.verbose),
-        event_log_dir=os.path.join("experimentOutputs", "rbii_mnist_events"),
+        event_log_dir=run_dir,
         event_log_name=run_name,
         log_candidate_events=True,
     )
@@ -150,7 +180,8 @@ def main() -> None:
 
     svg_path = None
     if args.viz and loop.event_log_path:
-        svg_path = render_timeline_viz(loop.event_log_path, args.viz_output_dir)
+        viz_output_dir = args.viz_output_dir or run_dir
+        svg_path = render_timeline_viz(loop.event_log_path, viz_output_dir)
         if svg_path is not None:
             eprint(f"  timeline_svg={svg_path}")
 

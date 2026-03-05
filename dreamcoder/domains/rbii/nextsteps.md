@@ -30,6 +30,10 @@ x get hist could look at the future!!!
 x why isn't enumerate running in parallel?
   x ported to bottom-up solver
 x restore enum debug hooks
+
+- auto clean up enum logs
+- store git hash and diffs with experiment
+  - just use aim to record and vis stuff?
    
 
 - conditional eval...does it actually make sense? not see any ifs in the 
@@ -40,10 +44,14 @@ x restore enum debug hooks
   - get this working before trying MNIST which might require functioning 
     branches
 
+  - need loss ranking in pool to deal with random (unpredictable) sequences
 
 - Arthur's test case: 
   - make a longer random string
   - add prims that could output characters not just succ-char
+
+
+
 
     
 ## paper plots
@@ -84,12 +92,26 @@ x restore enum debug hooks
 
 
 ## MNIST path
-- run it
+x run it
+- make model more realistically sized
 - look at program store
+    - add program store to timeline view
+- timeline view:
+  - debug log loss display...what is it, actually?
+  - can I embed visualizations of the output distribution?
+- make a movie of pool contents, obs, preds, perf, etc
+- why does uniform pred win?
 - port to bottom solver
+
+- cache backpropped params somehow
+- ensure cheap to update most recent model
+- ensure cheap to find and update the "old" model
+- 
 
 
 - exciting experiment:
   - equip neural path with knn lookups and a broader set of options for 
-    selection compute graphs and params...then see what kind of crazy things 
-    it comes up with!   
+    selection compute grap
+
+
+- incorp recognition and dream phases?

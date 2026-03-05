@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -140,6 +141,11 @@ def _truncate(s: str, n: int) -> str:
     return s[: n - 3] + "..."
 
 
+def _pretty_program_text(s: str) -> str:
+    # Keep source ASCII by using an escaped code point for lambda.
+    return re.sub(r"\blambda\b", "\u03bb", s)
+
+
 def _resolve_logs(args: argparse.Namespace) -> List[Path]:
     if args.logs:
         return [Path(x) for x in args.logs]
@@ -161,8 +167,12 @@ def _load_rows(path: Path) -> List[dict]:
     return rows
 
 
-def _collect_sequence(rows: Iterable[dict]) -> Tuple[int, int, Dict[int, str]]:
+def _collect_sequence(
+    rows: Iterable[dict],
+) -> Tuple[int, int, Dict[int, str], Dict[int, str], Dict[int, float]]:
     obs_by_t: Dict[int, str] = {}
+    context_by_t: Dict[int, str] = {}
+    logloss_by_t: Dict[int, float] = {}
     start_t: Optional[int] = None
     end_t: Optional[int] = None
     all_t: List[int] = []
@@ -181,6 +191,12 @@ def _collect_sequence(rows: Iterable[dict]) -> Tuple[int, int, Dict[int, str]]:
             obs = row.get("observed")
             if isinstance(obs, str):
                 obs_by_t[t] = obs
+            ctx = row.get("context")
+            if isinstance(ctx, str):
+                context_by_t[t] = ctx
+            ll = row.get("logloss_bits")
+            if isinstance(ll, (int, float)):
+                logloss_by_t[t] = float(ll)
 
     if obs_by_t:
         seq_start = min(obs_by_t.keys())
@@ -197,7 +213,7 @@ def _collect_sequence(rows: Iterable[dict]) -> Tuple[int, int, Dict[int, str]]:
     if end_t is None:
         end_t = seq_end
 
-    return min(start_t, seq_start), max(end_t, seq_end), obs_by_t
+    return min(start_t, seq_start), max(end_t, seq_end), obs_by_t, context_by_t, logloss_by_t
 
 
 def _collect_program_meta(rows: Iterable[dict]) -> Dict[int, ProgramMeta]:
@@ -223,6 +239,25 @@ def _collect_program_meta(rows: Iterable[dict]) -> Dict[int, ProgramMeta]:
             meta[pid].duplicate_candidate = meta[pid].duplicate_candidate or dup
 
     return meta
+
+
+def _collect_store_additions(rows: Iterable[dict]) -> Dict[int, List[int]]:
+    """
+    Collect frozen-store additions keyed by timestep from `enter` events.
+    """
+    adds_by_t: Dict[int, List[int]] = defaultdict(list)
+    for row in rows:
+        if row.get("event") != "enter":
+            continue
+        t = row.get("timestep")
+        pid = row.get("program_id")
+        if not isinstance(t, int) or not isinstance(pid, int):
+            continue
+        adds_by_t[t].append(pid)
+
+    for t in list(adds_by_t.keys()):
+        adds_by_t[t] = sorted(adds_by_t[t])
+    return dict(adds_by_t)
 
 
 def _build_episodes(
@@ -358,13 +393,14 @@ def _episode_label(
     max_program_label_len: int,
 ) -> str:
     alias = f"(program {alias_by_text[ep.program_text]})"
-    prog = _truncate(ep.program_text, max_program_label_len)
+    prog = _truncate(_pretty_program_text(ep.program_text), max_program_label_len)
+    id_prefix = f"#{ep.program_id} "
 
     if label_mode == "alias":
-        return alias
+        return id_prefix + alias
     if label_mode == "both":
-        return f"{alias} {prog}"
-    return prog
+        return f"{id_prefix}{alias} {prog}"
+    return id_prefix + prog
 
 
 def _estimate_text_width_px(text: str, font_size: float = 13.0) -> float:
@@ -458,6 +494,9 @@ def _render_svg(
     title: str,
     timesteps: List[int],
     obs_by_t: Dict[int, str],
+    context_by_t: Dict[int, str],
+    logloss_by_t: Dict[int, float],
+    store_additions_by_t: Dict[int, List[int]],
     episodes: List[ProgramEpisode],
     alias_by_text: Dict[str, int],
     args: argparse.Namespace,
@@ -470,7 +509,9 @@ def _render_svg(
     top = 32.0
     left = 30.0
     seq_x = left + (42.0 if args.show_timestep_labels else 22.0)
-    bracket_x0 = seq_x + 55.0
+    has_logloss = any(t in logloss_by_t for t in timesteps)
+    logloss_x = seq_x + 30.0
+    bracket_x0 = seq_x + (112.0 if has_logloss else 55.0)
     label_gap = 10.0
     bracket_arm = 10.0
 
@@ -478,6 +519,20 @@ def _render_svg(
     program_pad_x = 9.0
     program_pad_y = 6.0
     sequence_font_size = 24.0
+    loss_font_size = 10.0
+
+    context_palette = [
+        "#d7f0e3",
+        "#ffe9d6",
+        "#e4ebff",
+        "#f8dff0",
+        "#fff3c9",
+        "#d9f5ff",
+    ]
+    context_values = sorted({ctx for ctx in context_by_t.values() if isinstance(ctx, str)})
+    context_colors: Dict[str, str] = {
+        ctx: context_palette[i % len(context_palette)] for i, ctx in enumerate(context_values)
+    }
 
     y_by_t = {t: top + i * row_step for i, t in enumerate(timesteps)}
     label_texts = [
@@ -503,7 +558,7 @@ def _render_svg(
     if args.show_program_map and alias_by_text:
         inv = sorted(alias_by_text.items(), key=lambda x: x[1])
         for prog, idx in inv:
-            map_lines.append(f"program {idx}: {_truncate(prog, 120)}")
+            map_lines.append(f"program {idx}: {_truncate(_pretty_program_text(prog), 120)}")
 
     seq_bottom = top + ((len(timesteps) - 1) * row_step) if timesteps else top
     box_bottom = max((x.box_y + x.box_h for x in episode_layouts), default=seq_bottom)
@@ -513,13 +568,28 @@ def _render_svg(
     if map_lines:
         map_height = 34.0 + 18.0 * len(map_lines)
 
-    max_right = seq_x + 20.0
+    base_max_right = seq_x + 20.0
     for item in episode_layouts:
         right = item.box_x + item.box_w
-        if right > max_right:
-            max_right = right
+        if right > base_max_right:
+            base_max_right = right
+    if context_values:
+        legend_w = 130.0 + sum(22.0 + _estimate_text_width_px(ctx, 11.0) for ctx in context_values)
+        base_max_right = max(base_max_right, left + legend_w)
 
-    width = max_right + 34.0
+    has_store_additions = any(len(v) > 0 for v in store_additions_by_t.values())
+    store_col_x = base_max_right + 30.0
+    store_right = base_max_right
+    if has_store_additions:
+        store_right = store_col_x + _estimate_text_width_px("frozen store (+#id)", 11.0)
+        for t in timesteps:
+            ids = store_additions_by_t.get(t)
+            if not ids:
+                continue
+            label = " ".join(f"#{pid}" for pid in ids)
+            store_right = max(store_right, store_col_x + _estimate_text_width_px(label, 11.0))
+
+    width = max(base_max_right, store_right) + 34.0
     height = chart_bottom + 34.0 + map_height
 
     parts: List[str] = []
@@ -537,11 +607,46 @@ def _render_svg(
         + html.escape(title)
         + "</text>"
     )
+    if context_values:
+        legend_x = left + 290.0
+        legend_y = 20.0
+        parts.append(
+            f'<text x="{legend_x:.1f}" y="{legend_y:.1f}" '
+            f'font-family="{html.escape(args.font_family)}" '
+            'font-size="11" fill="#666">contexts:</text>'
+        )
+        x_cursor = legend_x + 58.0
+        for ctx in context_values:
+            fill = context_colors[ctx]
+            parts.append(
+                f'<rect x="{x_cursor:.1f}" y="{legend_y - 9.0:.1f}" width="12" height="12" '
+                f'rx="2" ry="2" fill="{fill}" stroke="#999" stroke-width="0.6"/>'
+            )
+            x_cursor += 16.0
+            parts.append(
+                f'<text x="{x_cursor:.1f}" y="{legend_y:.1f}" '
+                f'font-family="{html.escape(args.font_family)}" '
+                'font-size="11" fill="#666">'
+                + html.escape(ctx)
+                + "</text>"
+            )
+            x_cursor += _estimate_text_width_px(ctx, 11.0) + 10.0
 
     # Sequence column text in terminal/monospace style.
+    row_band_x = left - 4.0
+    row_band_w = max(24.0, (bracket_x0 - 10.0) - row_band_x)
     for t in timesteps:
         y = y_by_t[t]
         char = obs_by_t.get(t, "")
+        ctx = context_by_t.get(t)
+        loss_bits = logloss_by_t.get(t)
+
+        if isinstance(ctx, str) and ctx in context_colors:
+            parts.append(
+                f'<rect x="{row_band_x:.1f}" y="{y - (row_step * 0.43):.1f}" '
+                f'width="{row_band_w:.1f}" height="{row_step * 0.86:.1f}" '
+                f'rx="4" ry="4" fill="{context_colors[ctx]}" opacity="0.65"/>'
+            )
 
         if args.show_timestep_labels:
             parts.append(
@@ -551,12 +656,31 @@ def _render_svg(
                 + "</text>"
             )
 
+        if isinstance(ctx, str):
+            parts.append(
+                f'<text x="{seq_x - 20.0:.1f}" y="{y + 4:.1f}" '
+                f'font-family="{html.escape(args.font_family)}" '
+                'font-size="10" fill="#6a6a6a" text-anchor="middle">'
+                + html.escape(ctx)
+                + "</text>"
+            )
+
         parts.append(
             f'<text x="{seq_x:.1f}" y="{y + 5:.1f}" font-family="{html.escape(args.code_font_family)}" '
             f'font-size="{sequence_font_size:.0f}" fill="#222" text-anchor="middle">'
             + html.escape(char)
             + "</text>"
         )
+
+        if loss_bits is not None:
+            loss_str = f"{loss_bits:.2f}b"
+            parts.append(
+                f'<text x="{logloss_x:.1f}" y="{y + 3:.1f}" '
+                f'font-family="{html.escape(args.code_font_family)}" '
+                f'font-size="{loss_font_size:.0f}" fill="#646464" text-anchor="start">'
+                + html.escape(loss_str)
+                + "</text>"
+            )
 
     # Program brackets + connectors + rounded code boxes.
     for item in episode_layouts:
@@ -596,6 +720,34 @@ def _render_svg(
             + "</text>"
         )
 
+    if has_store_additions:
+        parts.append(
+            f'<text x="{store_col_x:.1f}" y="20.0" '
+            f'font-family="{html.escape(args.font_family)}" '
+            'font-size="11" fill="#666" text-anchor="start">frozen store (+#id)</text>'
+        )
+        if timesteps:
+            top_y = y_by_t[timesteps[0]] - (row_step * 0.45)
+            bot_y = y_by_t[timesteps[-1]] + (row_step * 0.45)
+            guide_x = store_col_x - 8.0
+            parts.append(
+                f'<line x1="{guide_x:.1f}" y1="{top_y:.1f}" x2="{guide_x:.1f}" y2="{bot_y:.1f}" '
+                'stroke="#b8b8b8" stroke-width="1" stroke-dasharray="2 3"/>'
+            )
+        for t in timesteps:
+            ids = store_additions_by_t.get(t)
+            if not ids:
+                continue
+            y = y_by_t[t]
+            label = " ".join(f"#{pid}" for pid in ids)
+            parts.append(
+                f'<text x="{store_col_x:.1f}" y="{y + 4:.1f}" '
+                f'font-family="{html.escape(args.code_font_family)}" '
+                'font-size="11" fill="#4a4a4a" text-anchor="start">'
+                + html.escape(label)
+                + "</text>"
+            )
+
     if map_lines:
         y0 = chart_bottom + 36.0
         parts.append(
@@ -617,8 +769,9 @@ def _render_svg(
 
 def _build_svg_for_log(log_path: Path, args: argparse.Namespace) -> str:
     rows = _load_rows(log_path)
-    start_t, end_t, obs_by_t = _collect_sequence(rows)
+    start_t, end_t, obs_by_t, context_by_t, logloss_by_t = _collect_sequence(rows)
     timesteps = list(range(start_t, end_t + 1))
+    store_additions_by_t = _collect_store_additions(rows)
 
     meta_by_pid = _collect_program_meta(rows)
     episodes = _build_episodes(rows, end_t, meta_by_pid)
@@ -629,6 +782,9 @@ def _build_svg_for_log(log_path: Path, args: argparse.Namespace) -> str:
         title=f"RBII Program Timeline: {log_path.stem}",
         timesteps=timesteps,
         obs_by_t=obs_by_t,
+        context_by_t=context_by_t,
+        logloss_by_t=logloss_by_t,
+        store_additions_by_t=store_additions_by_t,
         episodes=episodes,
         alias_by_text=alias_by_text,
         args=args,
