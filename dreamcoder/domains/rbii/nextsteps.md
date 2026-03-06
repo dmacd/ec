@@ -54,13 +54,13 @@ x restore enum debug hooks
 ## full RBII loop
 
 - baseline_bits == val_window? NO...its the validation
-  - > assumes each observation is worth one bit, which isnt true
+  x > assumes each observation is worth one bit, which isnt true
     > but does it matter? with fixed finite alphabet and boolean 
     > comparisons
-  - TODO: refactor with distribution-typed outputs
+  x TODO: refactor with distribution-typed outputs
   x weird: cand.witness bits should NEVER be none!! thats an exception
   x using hard min_weight cutoff - not what I want
-  - candidate buffer cap...wtf? then i have to align this with the proposal 
+  x candidate buffer cap...wtf? then i have to align this with the proposal 
     batch size...which...ugh. no. fuck this
   x I also want to support a mode where we just search for stuff...and if it 
     is more worthy than what's in the pool, we add it
@@ -74,9 +74,9 @@ x restore enum debug hooks
   x frozen programs are what should be store in the state, not the RBIILoop!
     - candidates should not get recorded in best/frozen programs automatically
     
-  - is the candidate buffer getting rolled over??
-    - no, we're just looking at the last -n:0 after extending it on each search
-    - this blows, lets nuke it and start over each cycle
+  x is the candidate buffer getting rolled over??
+    x no, we're just looking at the last -n:0 after extending it on each search
+    x this blows, lets nuke it and start over each cycle
   - MDL filter missing? 
     x need explicit computation of compression gain 
     x slack param
@@ -90,6 +90,27 @@ x viz fixes
   x need frozen id and pool id separate!
   x separate elbows
   
+- "force_if" sequence
+  - why does it fail totally? 
+    - what is keeping any programs from being accepted?
+      - maybe the MDL criterion is too strict when a "good" solution isn't 
+        quite possible?
+      - maybe the program that compares the last 3 symbols to a and predicts 
+        b is not accesible?
+        - we cant construct characters directly so it will already be very hard!
+    - what if programs are allowed to express "no opinion"
+      - 
+
+- experimental questions
+  - will increasing the pool size give borderline programs more 
+    opportunity to become proven i.e. edge out competitors because they have 
+    more tolerance to noise or small differences in performance?
+
+
+## transformers
+
+- edit op that takes a path sequence and then substitutes the function or 
+  primitive at that path, if the types line up
 
 
 ## paper plots
@@ -156,3 +177,4 @@ x run it
 
 ## viz ideas
 - make a javascript explorer that lets us probe and unfold stuff?
+- key feature --> streaming update?

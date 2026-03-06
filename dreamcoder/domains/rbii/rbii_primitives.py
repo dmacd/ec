@@ -158,6 +158,11 @@ def make_rbii_grammar(
   for i in range(cfg.max_int + 1):
     prims.append(_primitive(str(i), tint, i))
 
+  # alphabet characters as constants
+  for c in alphabet:
+    prims.append(_primitive(c, tcharacter, c))
+
+
   # integer arithmetic
   prims.append(_primitive("neg_int", arrow(tint, tint), _neg_int))
   prims.append(_primitive("add_int", arrow(tint, tint, tint), _add_int))

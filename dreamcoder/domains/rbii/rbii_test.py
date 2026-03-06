@@ -108,8 +108,8 @@ def run_sequence(
 
     if loop_version == "v2":
         cfg = RBIIConfigV2(
-            pool_target_size=3,
-            validation_window=6,
+            pool_target_size=5,
+            validation_window=10,
             min_time=min_time,
             enum_timeout_s=1.0,
             eval_timeout_s=0.02,
@@ -123,6 +123,7 @@ def run_sequence(
             verbose=True,
             event_log_dir=event_log_dir,
             event_log_name=name,
+            compression_gain_slack_bits=10,
         )
         enumerator = BottomSolverEnumerationController(
             enumeration_debug_hooks_factory=enum_debug_factory,
@@ -286,7 +287,7 @@ def main():
     def _random_sequence(length: int, alphabet: str) -> str:
         return "".join(random.choices(alphabet, k=length))
 
-    run_sequence("force_if",
+    _run_sequence("force_if",
                  "".join(
                    ["aaab"+_random_sequence(random.randint(1,5), "cde")
                           for _ in range(10)]),
