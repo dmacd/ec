@@ -4,6 +4,7 @@
 # except ModuleNotFoundError:
 
 import bin.binutil  # alt import if called as module
+import argparse
 import os
 import subprocess
 import sys
@@ -12,6 +13,11 @@ import random
 from dreamcoder.enumeration import EnumerationDebugHook
 from dreamcoder.utilities import eprint
 
+from dreamcoder.domains.rbii.rbii_loop_v2 import (
+    BottomSolverEnumerationController,
+    RBIIConfigV2,
+    RBIILoopV2,
+)
 from dreamcoder.domains.rbii.rbii_primitives import RBIIPrimitiveConfig, make_rbii_grammar
 from dreamcoder.domains.rbii.rbii_loop import RBIIConfig, RBIILoop
 from dreamcoder.domains.rbii.rbii_state import RBIIState
@@ -64,73 +70,115 @@ def _make_enum_debug_hook_factory(log_path: str):
     return hook_factory
 
 
-def run_sequence(name: str, seq: str, event_log_dir: str) -> None:
+def run_sequence(
+    name: str,
+    seq: str,
+    event_log_dir: str,
+    loop_version: str,
+    enum_cpus: int,
+) -> None:
     eprint("\n" + "=" * 80)
     eprint(f"Sequence: {name}  len={len(seq)}")
     eprint(f"  {seq}")
     eprint("=" * 80)
 
+    alphabet = "abcde"
+
     # Build grammar once per run.
-    g = make_rbii_grammar(RBIIPrimitiveConfig(alphabet="abcde", max_int=6, log_variable=0.0))
+    g = make_rbii_grammar(
+        RBIIPrimitiveConfig(alphabet=alphabet, max_int=6, log_variable=0.0)
+    )
 
     total_cpus = os.cpu_count() or 1
-    enum_cpus = max(1, (total_cpus * 3) // 4)
-
-    cfg = RBIIConfig(
-        pool_target_size=3,
-        validation_window=6,
-        min_time=3,            # enough history for k=0,1,2 lookbacks
-        enum_timeout_s=3,
-        # enum_timeout_s=0.6,
-        eval_timeout_s=0.02,
-        upper_bound=200,
-        # upper_bound=30,
-        budget_increment=1.5,
-        max_frontier=10,
-        verbose=True,
-        event_log_dir=event_log_dir,
-        event_log_name=name,
-        log_candidate_events=True,
-        enum_solver="bottom",
-        enum_cpus=enum_cpus,
-        enum_bottom_compile_me=False,
-    )
 
     state = RBIIState()
 
+    min_time = 3
     # Warmup: seed with the first min_time characters.
-    warmup = min(cfg.min_time, len(seq))
+    warmup = min(min_time, len(seq))
     for i in range(warmup):
         state.observe(seq[i])
 
     eprint(f"Warmup seeded obs_history[:{warmup}] = {''.join(state.obs_history)!r}")
 
-    if cfg.verbose:
-        eprint(
-            f"Enumeration solver={cfg.enum_solver} "
-            f"compile_me={cfg.enum_bottom_compile_me} cpus={cfg.enum_cpus}/{total_cpus}"
-        )
-
     enum_debug_log_path = os.path.join(event_log_dir, f"{name}_enumerate_debug.log")
     enum_debug_factory = _make_enum_debug_hook_factory(enum_debug_log_path)
+    enum_debug_factory = None # disable enumeration debug logging for now
+    event_log_path = None
 
-    rbii = RBIILoop(
-        grammar=g,
-        state=state,
-        cfg=cfg,
-        enumeration_debug_hooks_factory=enum_debug_factory,
-    )
+    if loop_version == "v2":
+        cfg = RBIIConfigV2(
+            pool_target_size=3,
+            validation_window=6,
+            min_time=min_time,
+            enum_timeout_s=3.0,
+            eval_timeout_s=0.02,
+            upper_bound=200.0,
+            budget_increment=1.5,
+            max_frontier=10,
+            enum_cpus=enum_cpus,
+            enum_bottom_compile_me=False,
+            alphabet=tuple(alphabet),
+            verbose=True,
+        )
+        enumerator = BottomSolverEnumerationController(
+            enumeration_debug_hooks_factory=enum_debug_factory,
+        )
+        rbii = RBIILoopV2(
+            grammar=g,
+            state=state,
+            cfg=cfg,
+            enumerator=enumerator,
+        )
+        if cfg.verbose:
+            eprint(
+                f"Loop=v2 bottom compile_me={cfg.enum_bottom_compile_me} "
+                f"cpus={cfg.enum_cpus}/{total_cpus}"
+            )
+    else:
+        cfg = RBIIConfig(
+            pool_target_size=3,
+            validation_window=6,
+            min_time=min_time,
+            enum_timeout_s=3,
+            eval_timeout_s=0.02,
+            upper_bound=200,
+            budget_increment=1.5,
+            max_frontier=10,
+            verbose=True,
+            event_log_dir=event_log_dir,
+            event_log_name=name,
+            log_candidate_events=True,
+            enum_solver="bottom",
+            enum_cpus=enum_cpus,
+            enum_bottom_compile_me=False,
+        )
+        if cfg.verbose:
+            eprint(
+                f"Loop=v1 solver={cfg.enum_solver} "
+                f"compile_me={cfg.enum_bottom_compile_me} cpus={cfg.enum_cpus}/{total_cpus}"
+            )
+        rbii = RBIILoop(
+            grammar=g,
+            state=state,
+            cfg=cfg,
+            enumeration_debug_hooks_factory=enum_debug_factory,
+        )
+        event_log_path = rbii.event_log_path
 
     # Online loop: at each step observe the next symbol.
     for i in range(warmup, len(seq)):
         rbii.observe_and_update(seq[i])
-    rbii.close()
-    if rbii.event_log_path:
-        eprint(f"Event log written: {rbii.event_log_path}")
+    if hasattr(rbii, "close"):
+        rbii.close()
+    if event_log_path:
+        eprint(f"Event log written: {event_log_path}")
 
     eprint("\nFinal:")
     eprint(f"  total_obs={len(state.obs_history)}")
     eprint(f"  stored_best_programs={len(state.best_programs)}")
+    if hasattr(rbii, "pool"):
+        eprint(f"  active_pool={len(rbii.pool)}")
     for j, p in enumerate(state.best_programs[:10]):
         eprint(f"    [{j}] {p}")
     if len(state.best_programs) > 10:
@@ -175,38 +223,76 @@ def _render_viz_for_run(run_event_log_dir: str) -> None:
             eprint(line)
 
 
+def _parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument(
+        "--loop",
+        choices=["v1", "v2"],
+        default="v1",
+        help="Choose the legacy RBII loop or the policy-factored V2 loop.",
+    )
+    return p.parse_args()
+
+
 def main():
-    base_event_log_dir = os.path.join("experimentOutputs", "rbii_program_events")
+    args = _parse_args()
+    total_cpus = os.cpu_count() or 1
+    enum_cpus = max(1, (total_cpus * 3) // 4)
+    if args.loop == "v2":
+        base_event_log_dir = os.path.join("experimentOutputs", "rbii_program_events_v2")
+    else:
+        base_event_log_dir = os.path.join("experimentOutputs", "rbii_program_events")
+
+    eprint("Loop version:", args.loop)
+    eprint(f"Using {enum_cpus} enumeration CPUs (total available:"
+           f" {total_cpus})")
+
     run_event_log_dir = _next_run_subdir(base_event_log_dir)
     eprint(f"Run output dir: {run_event_log_dir}")
 
-    # Simple predictable sequences
-    # run_sequence("all_a", "aaaaaaaaaaaaaaaaaaaa", run_event_log_dir)
-    # run_sequence("alternating_ab", "abababababababababab", run_event_log_dir)
-    # run_sequence("runs_of_3",
-    #              "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
-    #              run_event_log_dir)
+
+    def _run_sequence(name, seq):
+        return run_sequence(
+            name=name,
+            seq=seq,
+            event_log_dir=run_event_log_dir,
+            loop_version=args.loop,
+            enum_cpus=enum_cpus,
+        )
+
+    ## Simple predictable sequences
+    _run_sequence("all_a", "aaaaaaaaaaaaaaaaaaaa")
+    _run_sequence("alternating_ab", "abababababababababab")
+    _run_sequence("runs_of_3",
+                 "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
+                  )
+
+    ## runs of increasting length
     # run_sequence("runs_of_increasing",
     #              "aaabbbcccdddeee"
     #                   "aaaabbbbccccddddeeee"
     #                   "aaaaabbbbbcccccdddddeeeee"
     #                   "aaaaaabbbbbbccccccddddddeeeeee",
-    #              run_event_log_dir)
+    #              )
 
     # sequence that forces conditional to be the best
 
-    random.seed(0)
-    def _random_sequence(length: int, alphabet: str) -> str:
-        return "".join(random.choices(alphabet, k=length))
+    ## random seq
+    # random.seed(0)
+    # def _random_sequence(length: int, alphabet: str) -> str:
+    #     return "".join(random.choices(alphabet, k=length))
+    #
+    # run_sequence("force_if",
+    #              "".join(
+    #                ["aaab"+_random_sequence(random.randint(1,5), "cde")
+    #                       for _ in range(10)]),
+    #              )
 
-    run_sequence("force_if",
-                 "".join(
-                   ["aaab"+_random_sequence(random.randint(1,5), "cde")
-                          for _ in range(10)]),
-                 run_event_log_dir)
 
-
-    _render_viz_for_run(run_event_log_dir)
+    if args.loop == "v1":
+        _render_viz_for_run(run_event_log_dir)
+    else:
+        eprint("Skipping viz render for loop=v2 (no V2 event log format yet).")
 
 
 if __name__ == "__main__":
