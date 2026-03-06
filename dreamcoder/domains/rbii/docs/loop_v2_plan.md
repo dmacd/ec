@@ -70,6 +70,7 @@ The active pool and frozen store are intentionally separate concerns.
       `window_len * log2(|alphabet|)`.
     - `alphabet` must be explicitly provided in config as a validated
       `tuple[str, ...]`.
+    - the config precomputes `alphabet_set` and `baseline_bits_per_symbol`.
     - alphabet validation/canonicalization belongs in config construction, not
       in the loss-model hot path.
 
@@ -116,6 +117,9 @@ Current bottom-solver adapter is intentionally narrow:
    - no pool insertion on duplicate candidate,
    - freeze-only writes to `best_programs`,
    - global rerank behavior across multiple timesteps.
+   These now exist in `dreamcoder/domains/rbii/tests/test_loop_v2.py`; extend
+   that file rather than adding scattered V2 test modules unless there is a
+   clear reason to split by concern.
 
 ## Guidance for Future Codex Sessions
 
