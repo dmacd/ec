@@ -7,5 +7,6 @@ Files:
 - rbii_state.py      : RBIIState + causal per-timestep state views
 - rbii_primitives.py : DSL primitives + grammar builder (explicit state input)
 - rbii_loop.py       : minimal RBII loop with pool eviction/refill
+- rbii_loss.py       : loss accounting models (categorical log-loss default)
 - rbii_loop_v2.py    : policy-factored RBII scaffold for richer scheduling/selection
 """

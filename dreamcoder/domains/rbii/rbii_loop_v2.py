@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Protocol, Sequence, Set
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Protocol, Sequence, Set, Tuple
 
 from dreamcoder.enumeration import (
     EnumerationDebugHook,
@@ -14,6 +14,7 @@ from dreamcoder.task import Task
 from dreamcoder.type import arrow, tcharacter
 from dreamcoder.utilities import eprint
 
+from .rbii_loss import CategoricalLogLossModel, RBIIWindowLossModel
 from .rbii_state import RBIIState
 from .rbii_types import RBIIEvalState, trbii_state
 
@@ -21,7 +22,7 @@ from .rbii_types import RBIIEvalState, trbii_state
 @dataclass
 class PoolPredictor:
     program: Program
-    fn: Callable[[RBIIEvalState], str]
+    fn: Callable[[RBIIEvalState], Any]
     weight: float = 1.0
     source: str = "enumerated"
     program_id: Optional[int] = None
@@ -32,7 +33,7 @@ class PoolPredictor:
 class CandidateProposal:
     program: Program
     witness_bits: float
-    fn: Optional[Callable[[RBIIEvalState], str]] = None
+    fn: Optional[Callable[[RBIIEvalState], Any]] = None
     source: str = "enumerated"
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -135,14 +136,41 @@ class RBIIConfigV2:
     exploration_min_batch: int = 1
     exploration_surplus_batch: int = 0
 
+    # Required explicit alphabet for categorical log-loss accounting.
+    alphabet: Tuple[str, ...] = ()
+    deterministic_smoothing_eps: float = 1e-3
+    min_probability: float = 1e-12
+
     # Candidate passes compression-cost gate when:
     #   compression_gain + compression_gain_slack_bits > witness_bits
     # Larger values are more permissive.
     compression_gain_slack_bits: float = 0.0
 
-    mispredict_penalty: float = 0.1
-
     verbose: bool = True
+
+    alphabet_set: FrozenSet[str] = field(init=False, repr=False)
+    baseline_bits_per_symbol: float = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.alphabet, tuple):
+            raise TypeError("RBIIConfigV2.alphabet must be a tuple[str, ...].")
+        if not self.alphabet:
+            raise ValueError("RBIIConfigV2.alphabet must be explicitly provided.")
+
+        seen = set()
+        for symbol in self.alphabet:
+            if not isinstance(symbol, str) or len(symbol) != 1:
+                raise ValueError(
+                    "RBIIConfigV2.alphabet entries must be single-character strings."
+                )
+            if symbol in seen:
+                raise ValueError("RBIIConfigV2.alphabet must not contain duplicates.")
+            seen.add(symbol)
+
+        self.alphabet_set = frozenset(self.alphabet)
+        self.baseline_bits_per_symbol = (
+            0.0 if len(self.alphabet) <= 1 else math.log2(float(len(self.alphabet)))
+        )
 
 
 class BottomSolverEnumerationController:
@@ -245,6 +273,9 @@ class MDLDetectabilityPolicy:
       via Z * 2^{-MDL score}
     """
 
+    def __init__(self, loss_model: RBIIWindowLossModel):
+        self.loss_model = loss_model
+
     def admit_and_weight(
         self,
         ctx: CandidateContext,
@@ -260,7 +291,12 @@ class MDLDetectabilityPolicy:
         start = max(int(ctx.cfg.min_time), int(ctx.timestep) - int(ctx.cfg.validation_window) + 1)
         if start > int(ctx.timestep):
             return []
-        baseline_bits = float(ctx.timestep - start + 1)
+        baseline_bits = self.loss_model.baseline_bits(
+            state=ctx.state,
+            cfg=ctx.cfg,
+            start_timestep=start,
+            end_timestep=int(ctx.timestep),
+        )
 
         ranked: List[tuple[float, CandidateProposal]] = []
         for cand in candidates:
@@ -318,7 +354,16 @@ class MDLDetectabilityPolicy:
                 return None
 
             y = ctx.state.obs_history[i]
-            loss += 0.0 if yhat == y else 1.0
+            bits = self.loss_model.loss_bits(
+                prediction=yhat,
+                observed=y,
+                state=ctx.state,
+                cfg=ctx.cfg,
+                timestep=i,
+            )
+            if bits is None:
+                return None
+            loss += float(bits)
         return loss
 
 
@@ -351,10 +396,12 @@ class RBIILoopV2:
         enumerator: Optional[EnumerationController] = None,
         candidate_policy: Optional[CandidateWeightPolicy] = None,
         freeze_policy: Optional[FreezePolicy] = None,
+        loss_model: Optional[RBIIWindowLossModel] = None,
     ):
         self.g = grammar
         self.state = state
         self.cfg = cfg or RBIIConfigV2()
+        self.loss_model = loss_model or CategoricalLogLossModel()
 
         default_schedule = SurpriseAdaptiveEnumerationSchedule(
             min_batch=max(0, int(self.cfg.exploration_min_batch)),
@@ -367,7 +414,9 @@ class RBIILoopV2:
         self.enumerator = enumerator or BottomSolverEnumerationController(
             schedule=default_schedule
         )
-        self.candidate_policy = candidate_policy or MDLDetectabilityPolicy()
+        self.candidate_policy = candidate_policy or MDLDetectabilityPolicy(
+            loss_model=self.loss_model
+        )
         self.freeze_policy = freeze_policy or AlwaysFreezeIncumbentPolicy()
 
         self.pool: List[PoolPredictor] = []
@@ -399,10 +448,16 @@ class RBIILoopV2:
             except Exception:
                 continue
 
-            if yhat == symbol:
-                pp.weight *= 1.0
-            else:
-                pp.weight *= float(self.cfg.mispredict_penalty)
+            bits = self.loss_model.loss_bits(
+                prediction=yhat,
+                observed=symbol,
+                state=self.state,
+                cfg=self.cfg,
+                timestep=t,
+            )
+            if bits is None:
+                continue
+            pp.weight *= math.pow(2.0, -float(bits))
 
             survivors.append(pp)
         self.pool = survivors
@@ -470,17 +525,20 @@ class RBIILoopV2:
         if not self.pool:
             return None
 
-        votes: Dict[str, float] = {}
+        weighted_predictions: List[tuple[float, Any]] = []
         for pp in self.pool:
             try:
                 yhat = pp.fn(view)
             except Exception:
                 continue
-            votes[yhat] = votes.get(yhat, 0.0) + max(pp.weight, 0.0)
+            weighted_predictions.append((max(pp.weight, 0.0), yhat))
 
-        if not votes:
-            return None
-        return max(votes.items(), key=lambda kv: kv[1])[0]
+        return self.loss_model.mixture_predict_symbol(
+            weighted_predictions=weighted_predictions,
+            state=self.state,
+            cfg=self.cfg,
+            timestep=view.timestep,
+        )
 
     def _rerank_pool_and_candidates(
         self,

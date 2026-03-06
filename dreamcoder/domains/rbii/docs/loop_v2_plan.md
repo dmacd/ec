@@ -63,12 +63,22 @@ The active pool and frozen store are intentionally separate concerns.
     - `compression_gain_slack_bits` is a global permissiveness control (higher is
       more permissive).
 
+11. Default loss mode is categorical log-loss.
+    - pool updates are multiplicative Bayes-style updates:
+      `weight <- weight * 2^(-loss_bits)`.
+    - baseline bits use a uniform categorical baseline:
+      `window_len * log2(|alphabet|)`.
+    - `alphabet` must be explicitly provided in config as a validated
+      `tuple[str, ...]`.
+    - alphabet validation/canonicalization belongs in config construction, not
+      in the loss-model hot path.
+
 ## Current Per-Step Flow
 
 At each observed symbol:
 
 1. Predict from weighted pool vote.
-2. Update each pool member weight from outcome (`mispredict_penalty` on miss).
+2. Update each pool member weight with categorical log-loss bits.
 3. Append observation to `RBIIState`.
 4. Build validation task/window (when past `min_time`).
 5. Enumerate proposals (`EnumerationController`).

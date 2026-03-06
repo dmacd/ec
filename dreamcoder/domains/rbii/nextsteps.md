@@ -79,10 +79,14 @@ x restore enum debug hooks
     - this blows, lets nuke it and start over each cycle
   - MDL filter missing? 
     x need explicit computation of compression gain 
-    - slack param
-    - need to generalize to non-binary observations
-       
-    
+    x slack param
+    x- need to generalize to non-binary observations
+       x ugh, this is way too much code wtf 
+       x finish reviewing loss
+           x method for inferring alphabet is super dumb
+  - then run it?
+
+
 ## paper plots
 - test case illustrations
   - in order to show recovery times, we'll have to mesh the enumeration 
