@@ -38,6 +38,16 @@ class RBIIWindowLossModel(Protocol):
     ) -> Optional[str]:
         ...
 
+    def mixture_distribution(
+        self,
+        *,
+        weighted_predictions: Sequence[Tuple[float, Any]],
+        state: RBIIState,
+        cfg: Any,
+        timestep: int,
+    ) -> Optional[Dict[str, float]]:
+        ...
+
 
 class CategoricalLogLossModel:
     """
@@ -101,6 +111,24 @@ class CategoricalLogLossModel:
         cfg: Any,
         timestep: int,
     ) -> Optional[str]:
+        dist = self.mixture_distribution(
+            weighted_predictions=weighted_predictions,
+            state=state,
+            cfg=cfg,
+            timestep=timestep,
+        )
+        if not dist:
+            return None
+        return max(dist.items(), key=lambda kv: kv[1])[0]
+
+    def mixture_distribution(
+        self,
+        *,
+        weighted_predictions: Sequence[Tuple[float, Any]],
+        state: RBIIState,
+        cfg: Any,
+        timestep: int,
+    ) -> Optional[Dict[str, float]]:
         _ = state
         _ = timestep
         if not weighted_predictions:
@@ -125,7 +153,7 @@ class CategoricalLogLossModel:
 
         if not have_valid:
             return None
-        return max(mixture.items(), key=lambda kv: kv[1])[0]
+        return mixture
 
     def _distribution(
         self,

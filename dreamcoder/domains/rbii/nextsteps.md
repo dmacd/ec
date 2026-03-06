@@ -86,6 +86,11 @@ x restore enum debug hooks
            x method for inferring alphabet is super dumb
   - then run it?
 
+x viz fixes
+  x need frozen id and pool id separate!
+  x separate elbows
+  
+
 
 ## paper plots
 - test case illustrations
@@ -148,3 +153,6 @@ x run it
 
 
 - incorp recognition and dream phases?
+
+## viz ideas
+- make a javascript explorer that lets us probe and unfold stuff?

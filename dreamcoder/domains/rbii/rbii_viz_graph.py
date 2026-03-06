@@ -7,18 +7,20 @@ import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 @dataclass
 class ProgramMeta:
     program_text: str
+    program_id: Optional[int] = None
     duplicate_candidate: bool = False
 
 
 @dataclass
 class ProgramEpisode:
-    program_id: int
+    active_id: int
+    program_id: Optional[int]
     program_text: str
     start_t: int
     end_t: int
@@ -47,8 +49,8 @@ class EpisodeLayout:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=(
-            "Render RBII event logs as bracket timelines (no Graphviz). "
-            "By default, processes all JSONL logs in experimentOutputs/rbii_program_events."
+            "Render RBII V2 event logs as bracket timelines (no Graphviz). "
+            "By default, processes all JSONL logs in experimentOutputs/rbii_program_events_v2."
         )
     )
     p.add_argument(
@@ -58,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--input-dir",
-        default="experimentOutputs/rbii_program_events",
+        default="experimentOutputs/rbii_program_events_v2",
         help="Directory scanned for *.jsonl when no explicit logs are passed.",
     )
     p.add_argument(
@@ -220,34 +222,43 @@ def _collect_program_meta(rows: Iterable[dict]) -> Dict[int, ProgramMeta]:
     meta: Dict[int, ProgramMeta] = {}
 
     for row in rows:
-        pid = row.get("program_id")
-        if not isinstance(pid, int):
+        active_id = row.get("active_id")
+        if not isinstance(active_id, int):
             continue
 
         prog = row.get("program")
         if not isinstance(prog, str):
-            prog = f"<program {pid}>"
+            prog = f"<active {active_id}>"
+        program_id = row.get("program_id")
+        if not isinstance(program_id, int):
+            program_id = None
         dup = bool(row.get("duplicate_candidate", False))
 
-        if pid not in meta:
-            meta[pid] = ProgramMeta(program_text=prog, duplicate_candidate=dup)
+        if active_id not in meta:
+            meta[active_id] = ProgramMeta(
+                program_text=prog,
+                program_id=program_id,
+                duplicate_candidate=dup,
+            )
         else:
-            if not meta[pid].program_text.startswith("<program") and prog.startswith("<program"):
+            if not meta[active_id].program_text.startswith("<active") and prog.startswith("<active"):
                 pass
             else:
-                meta[pid].program_text = prog
-            meta[pid].duplicate_candidate = meta[pid].duplicate_candidate or dup
+                meta[active_id].program_text = prog
+            if program_id is not None:
+                meta[active_id].program_id = program_id
+            meta[active_id].duplicate_candidate = meta[active_id].duplicate_candidate or dup
 
     return meta
 
 
 def _collect_store_additions(rows: Iterable[dict]) -> Dict[int, List[int]]:
     """
-    Collect frozen-store additions keyed by timestep from `enter` events.
+    Collect frozen-store additions keyed by timestep from `freeze` events.
     """
     adds_by_t: Dict[int, List[int]] = defaultdict(list)
     for row in rows:
-        if row.get("event") != "enter":
+        if row.get("event") != "freeze":
             continue
         t = row.get("timestep")
         pid = row.get("program_id")
@@ -263,18 +274,18 @@ def _collect_store_additions(rows: Iterable[dict]) -> Dict[int, List[int]]:
 def _build_episodes(
     rows: Iterable[dict],
     end_t: int,
-    meta_by_pid: Dict[int, ProgramMeta],
+    meta_by_active_id: Dict[int, ProgramMeta],
 ) -> List[ProgramEpisode]:
-    open_by_pid: Dict[int, ProgramEpisode] = {}
+    open_by_active_id: Dict[int, ProgramEpisode] = {}
     episodes: List[ProgramEpisode] = []
 
-    predict_times: Dict[int, List[int]] = defaultdict(list)
+    incumbent_times: Dict[int, List[int]] = defaultdict(list)
     for row in rows:
-        if row.get("event") == "predict_used":
-            pid = row.get("program_id")
+        if row.get("event") == "observe":
+            active_id = row.get("active_id")
             t = row.get("timestep")
-            if isinstance(pid, int) and isinstance(t, int):
-                predict_times[pid].append(t)
+            if isinstance(active_id, int) and isinstance(t, int):
+                incumbent_times[active_id].append(t)
 
     for row in rows:
         ev = row.get("event")
@@ -282,37 +293,44 @@ def _build_episodes(
         if not isinstance(t, int):
             continue
 
-        pid = row.get("program_id")
-        if ev in ("enter", "evicted") and not isinstance(pid, int):
+        active_id = row.get("active_id")
+        if ev in ("pool_enter", "pool_exit") and not isinstance(active_id, int):
             continue
-        if not isinstance(pid, int):
+        if not isinstance(active_id, int):
             continue
 
-        meta = meta_by_pid.get(pid, ProgramMeta(program_text=f"<program {pid}>"))
+        meta = meta_by_active_id.get(active_id, ProgramMeta(program_text=f"<active {active_id}>"))
+        program_id = meta.program_id
+        row_program_id = row.get("program_id")
+        if isinstance(row_program_id, int):
+            program_id = row_program_id
 
-        if ev == "enter":
-            if pid in open_by_pid:
-                existing = open_by_pid.pop(pid)
+        if ev == "pool_enter":
+            if active_id in open_by_active_id:
+                existing = open_by_active_id.pop(active_id)
                 existing.end_t = max(existing.start_t, t - 1)
                 episodes.append(existing)
 
-            open_by_pid[pid] = ProgramEpisode(
-                program_id=pid,
+            open_by_active_id[active_id] = ProgramEpisode(
+                active_id=active_id,
+                program_id=program_id,
                 program_text=meta.program_text,
                 start_t=t,
                 end_t=t,
                 duplicate_candidate=meta.duplicate_candidate,
             )
 
-        elif ev == "evicted":
-            if pid in open_by_pid:
-                ep = open_by_pid.pop(pid)
+        elif ev == "pool_exit":
+            if active_id in open_by_active_id:
+                ep = open_by_active_id.pop(active_id)
+                ep.program_id = program_id
                 ep.end_t = max(ep.start_t, t)
                 episodes.append(ep)
             else:
                 episodes.append(
                     ProgramEpisode(
-                        program_id=pid,
+                        active_id=active_id,
+                        program_id=program_id,
                         program_text=meta.program_text,
                         start_t=t,
                         end_t=t,
@@ -320,24 +338,26 @@ def _build_episodes(
                     )
                 )
 
-    for ep in open_by_pid.values():
+    for ep in open_by_active_id.values():
         ep.end_t = max(ep.start_t, end_t)
         episodes.append(ep)
 
-    # Ensure predict-used with missing enter/evicted still appears as a one-row episode.
     covered_predicts: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
     for ep in episodes:
-        covered_predicts[ep.program_id].append((ep.start_t, ep.end_t))
+        covered_predicts[ep.active_id].append((ep.start_t, ep.end_t))
 
-    for pid, times in predict_times.items():
-        spans = covered_predicts.get(pid, [])
+    for active_id, times in incumbent_times.items():
+        spans = covered_predicts.get(active_id, [])
         for t in times:
             if any(a <= t <= b for a, b in spans):
                 continue
-            meta = meta_by_pid.get(pid, ProgramMeta(program_text=f"<program {pid}>"))
+            meta = meta_by_active_id.get(
+                active_id, ProgramMeta(program_text=f"<active {active_id}>")
+            )
             episodes.append(
                 ProgramEpisode(
-                    program_id=pid,
+                    active_id=active_id,
+                    program_id=meta.program_id,
                     program_text=meta.program_text,
                     start_t=t,
                     end_t=t,
@@ -345,15 +365,15 @@ def _build_episodes(
                     used_for_prediction=True,
                 )
             )
-            covered_predicts[pid].append((t, t))
+            covered_predicts[active_id].append((t, t))
 
     for ep in episodes:
-        times = predict_times.get(ep.program_id, [])
+        times = incumbent_times.get(ep.active_id, [])
         ep.used_for_prediction = ep.used_for_prediction or any(
             ep.start_t <= t <= ep.end_t for t in times
         )
 
-    episodes.sort(key=lambda e: (e.start_t, e.end_t, e.program_id, e.program_text))
+    episodes.sort(key=lambda e: (e.start_t, e.end_t, e.active_id, e.program_text))
     return episodes
 
 
@@ -394,7 +414,8 @@ def _episode_label(
 ) -> str:
     alias = f"(program {alias_by_text[ep.program_text]})"
     prog = _truncate(_pretty_program_text(ep.program_text), max_program_label_len)
-    id_prefix = f"#{ep.program_id} "
+    frozen_prefix = "" if ep.program_id is None else f"[#{ep.program_id}] "
+    id_prefix = f"@{ep.active_id} {frozen_prefix}"
 
     if label_mode == "alias":
         return id_prefix + alias
@@ -406,6 +427,39 @@ def _episode_label(
 def _estimate_text_width_px(text: str, font_size: float = 13.0) -> float:
     # Approximate width for monospace-ish rendering.
     return max(20.0, len(text) * (font_size * 0.62))
+
+
+def _centered_offsets(count: int, step_px: float) -> List[float]:
+    if count <= 1:
+        return [0.0] * max(count, 0)
+    mid = (count - 1) / 2.0
+    return [(idx - mid) * step_px for idx in range(count)]
+
+
+def _event_row_offsets(
+    episodes: Sequence[ProgramEpisode],
+    step_px: float,
+) -> Tuple[Dict[int, float], Dict[int, float]]:
+    start_offsets: Dict[int, float] = {}
+    end_offsets: Dict[int, float] = {}
+
+    starts_by_t: Dict[int, List[ProgramEpisode]] = defaultdict(list)
+    ends_by_t: Dict[int, List[ProgramEpisode]] = defaultdict(list)
+    for ep in episodes:
+        starts_by_t[ep.start_t].append(ep)
+        ends_by_t[ep.end_t].append(ep)
+
+    for timestep, group in starts_by_t.items():
+        ordered = sorted(group, key=lambda ep: (ep.lane, ep.active_id))
+        for ep, offset in zip(ordered, _centered_offsets(len(ordered), step_px)):
+            start_offsets[ep.active_id] = offset
+
+    for timestep, group in ends_by_t.items():
+        ordered = sorted(group, key=lambda ep: (ep.lane, ep.active_id))
+        for ep, offset in zip(ordered, _centered_offsets(len(ordered), step_px)):
+            end_offsets[ep.active_id] = offset
+
+    return start_offsets, end_offsets
 
 
 def _layout_episode_boxes(
@@ -422,12 +476,16 @@ def _layout_episode_boxes(
     pad_y: float,
 ) -> List[EpisodeLayout]:
     layouts: List[EpisodeLayout] = []
+    row_offset_step = max(4.0, min(7.0, lane_step * 0.15))
+    start_offsets, end_offsets = _event_row_offsets(episodes, step_px=row_offset_step)
 
     for ep, label in zip(episodes, labels):
         y1 = y_by_t.get(ep.start_t)
         y2 = y_by_t.get(ep.end_t)
         if y1 is None or y2 is None:
             continue
+        y1 += start_offsets.get(ep.active_id, 0.0)
+        y2 += end_offsets.get(ep.active_id, 0.0)
         if y2 < y1:
             y1, y2 = y2, y1
 
@@ -456,13 +514,30 @@ def _layout_episode_boxes(
     if not layouts:
         return layouts
 
-    # Use a shared connector routing corridor left of all boxes.
+    # Give each episode its own elbow column so connector verticals do not
+    # repeatedly collapse onto the same x coordinate.
     max_bracket_x = max(x.bracket_x for x in layouts)
-    router_x = max_bracket_x + max(14.0, lane_step * 0.6)
-    box_x = router_x + max(30.0, connector_len) + label_gap
+    router_x0 = max_bracket_x + max(14.0, lane_step * 0.6)
+    router_lane_step = max(7.0, min(14.0, lane_step * 0.28))
+    router_order = sorted(
+        layouts,
+        key=lambda item: (
+            item.episode.start_t,
+            item.episode.end_t,
+            item.episode.lane,
+            item.episode.active_id,
+        ),
+    )
+    router_rank_by_active_id = {
+        item.episode.active_id: rank for rank, item in enumerate(router_order)
+    }
+    max_router_x = router_x0 + max(0, len(router_order) - 1) * router_lane_step
+    box_x = max_router_x + max(30.0, connector_len) + label_gap
 
     for item in layouts:
-        item.router_x = router_x
+        item.router_x = router_x0 + (
+            router_rank_by_active_id.get(item.episode.active_id, 0) * router_lane_step
+        )
         item.box_x = box_x
 
     # Ensure boxes never overlap and keep at least min_box_margin vertical gap.
@@ -773,8 +848,8 @@ def _build_svg_for_log(log_path: Path, args: argparse.Namespace) -> str:
     timesteps = list(range(start_t, end_t + 1))
     store_additions_by_t = _collect_store_additions(rows)
 
-    meta_by_pid = _collect_program_meta(rows)
-    episodes = _build_episodes(rows, end_t, meta_by_pid)
+    meta_by_active_id = _collect_program_meta(rows)
+    episodes = _build_episodes(rows, end_t, meta_by_active_id)
     _assign_lanes(episodes)
     alias_by_text = _program_aliases(episodes)
 

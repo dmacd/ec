@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import math
+import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Protocol, Sequence, Set, Tuple
 
@@ -26,6 +29,7 @@ class PoolPredictor:
     weight: float = 1.0
     source: str = "enumerated"
     program_id: Optional[int] = None
+    active_id: Optional[int] = None
     duplicate_candidate: bool = False
 
 
@@ -50,6 +54,13 @@ class FreezeDecision:
     should_freeze: bool
     predictor: Optional[PoolPredictor] = None
     reason: str = "policy"
+
+
+@dataclass
+class PredictionSnapshot:
+    symbol: Optional[str]
+    incumbent: Optional[PoolPredictor]
+    distribution: Optional[Dict[str, float]]
 
 
 @dataclass
@@ -147,6 +158,8 @@ class RBIIConfigV2:
     compression_gain_slack_bits: float = 0.0
 
     verbose: bool = True
+    event_log_dir: Optional[str] = None
+    event_log_name: str = "rbii_events"
 
     alphabet_set: FrozenSet[str] = field(init=False, repr=False)
     baseline_bits_per_symbol: float = field(init=False, repr=False)
@@ -400,7 +413,9 @@ class RBIILoopV2:
     ):
         self.g = grammar
         self.state = state
-        self.cfg = cfg or RBIIConfigV2()
+        if cfg is None:
+            raise ValueError("RBIILoopV2 requires an explicit RBIIConfigV2 with alphabet.")
+        self.cfg = cfg
         self.loss_model = loss_model or CategoricalLogLossModel()
 
         default_schedule = SurpriseAdaptiveEnumerationSchedule(
@@ -428,24 +443,41 @@ class RBIILoopV2:
         self._incumbent_key: Optional[str] = None
         self._incumbent_run_length: int = 0
         self._last_step_surprise: float = 0.0
+        self._next_active_id: int = 1
+        self._seen_active_program_keys: Set[str] = set()
+        self.event_log_path: Optional[str] = None
+        self._event_fp = None
+        self._init_event_log()
 
     def predict_next(self) -> Optional[str]:
         t = self.state.time()
         view = self.state.view_for_timestep(t)
-        return self._predict_with_pool(view)
+        return self._prediction_snapshot(view).symbol
 
     def observe_and_update(self, symbol: str) -> None:
         t = self.state.time()
         view = self.state.view_for_timestep(t)
-        pred_before = self._predict_with_pool(view)
+        snapshot = self._prediction_snapshot(view)
+        pred_before = snapshot.symbol
         self._last_step_surprise = 0.0 if pred_before == symbol else 1.0
+        logloss_bits = None
+        if snapshot.distribution is not None:
+            logloss_bits = self.loss_model.loss_bits(
+                prediction=snapshot.distribution,
+                observed=symbol,
+                state=self.state,
+                cfg=self.cfg,
+                timestep=t,
+            )
 
         # Online weight update on current observation.
         survivors: List[PoolPredictor] = []
+        exits: List[Tuple[PoolPredictor, str]] = []
         for pp in self.pool:
             try:
                 yhat = pp.fn(view)
             except Exception:
+                exits.append((pp, "predict_error"))
                 continue
 
             bits = self.loss_model.loss_bits(
@@ -456,6 +488,7 @@ class RBIILoopV2:
                 timestep=t,
             )
             if bits is None:
+                exits.append((pp, "invalid_prediction"))
                 continue
             pp.weight *= math.pow(2.0, -float(bits))
 
@@ -463,6 +496,9 @@ class RBIILoopV2:
         self.pool = survivors
 
         self.state.observe(symbol)
+        self._emit_observe(t, symbol, pred_before, logloss_bits, snapshot.incumbent)
+        for pp, reason in exits:
+            self._emit_pool_exit(t, pp, reason)
 
         if self.cfg.verbose:
             eprint(
@@ -522,33 +558,16 @@ class RBIILoopV2:
         )
 
     def _predict_with_pool(self, view: RBIIEvalState) -> Optional[str]:
-        if not self.pool:
-            return None
-
-        weighted_predictions: List[tuple[float, Any]] = []
-        for pp in self.pool:
-            try:
-                yhat = pp.fn(view)
-            except Exception:
-                continue
-            weighted_predictions.append((max(pp.weight, 0.0), yhat))
-
-        return self.loss_model.mixture_predict_symbol(
-            weighted_predictions=weighted_predictions,
-            state=self.state,
-            cfg=self.cfg,
-            timestep=view.timestep,
-        )
+        return self._prediction_snapshot(view).symbol
 
     def _rerank_pool_and_candidates(
         self,
         admissions: Sequence[WeightedAdmission],
         timestep: int,
     ) -> None:
-        _ = timestep
         target = int(self.cfg.pool_target_size)
         if target <= 0:
-            self.pool = []
+            self._commit_reranked_pool([], timestep)
             return
 
         ranked_pool = sorted(self.pool, key=lambda p: p.weight, reverse=True)
@@ -600,13 +619,14 @@ class RBIILoopV2:
                     fn=fn,
                     weight=weight,
                     source=cand.source,
-                    program_id=None,
+                    program_id=self._frozen_program_id_by_key.get(cand_key),
+                    active_id=self._alloc_active_id(),
                     duplicate_candidate=False,
                 )
             )
             selected_program_keys.add(cand_key)
 
-        self.pool = new_pool
+        self._commit_reranked_pool(new_pool, timestep)
 
     def _current_incumbent(self) -> Optional[PoolPredictor]:
         if not self.pool:
@@ -642,6 +662,7 @@ class RBIILoopV2:
         if not decision.should_freeze or decision.predictor is None:
             return
         frozen_key = str(decision.predictor.program)
+        added = False
         if frozen_key in self._frozen_program_id_by_key:
             pid = self._frozen_program_id_by_key[frozen_key]
         else:
@@ -650,7 +671,178 @@ class RBIILoopV2:
                 birth_timestep=timestep,
             )
             self._frozen_program_id_by_key[frozen_key] = pid
+            added = True
 
         for pp in self.pool:
             if str(pp.program) == frozen_key:
                 pp.program_id = pid
+        if added:
+            self._emit_freeze(timestep, decision.predictor, pid, decision.reason)
+
+    def _prediction_snapshot(self, view: RBIIEvalState) -> PredictionSnapshot:
+        if not self.pool:
+            return PredictionSnapshot(None, None, None)
+
+        weighted_predictions: List[Tuple[float, Any]] = []
+        valid_predictors: List[Tuple[float, PoolPredictor]] = []
+        for pp in self.pool:
+            try:
+                yhat = pp.fn(view)
+            except Exception:
+                continue
+            weight = max(pp.weight, 0.0)
+            weighted_predictions.append((weight, yhat))
+            if weight > 0.0:
+                valid_predictors.append((weight, pp))
+
+        dist = self.loss_model.mixture_distribution(
+            weighted_predictions=weighted_predictions,
+            state=self.state,
+            cfg=self.cfg,
+            timestep=view.timestep,
+        )
+        symbol = None if dist is None else max(dist.items(), key=lambda kv: kv[1])[0]
+        incumbent = None
+        if valid_predictors:
+            incumbent = max(valid_predictors, key=lambda item: item[0])[1]
+        return PredictionSnapshot(symbol, incumbent, dist)
+
+    def _alloc_active_id(self) -> int:
+        active_id = self._next_active_id
+        self._next_active_id += 1
+        return active_id
+
+    def _commit_reranked_pool(self, new_pool: Sequence[PoolPredictor], timestep: int) -> None:
+        old_ids = {pp.active_id for pp in self.pool if pp.active_id is not None}
+        new_ids = {pp.active_id for pp in new_pool if pp.active_id is not None}
+
+        for pp in self.pool:
+            if pp.active_id is None or pp.active_id in new_ids:
+                continue
+            self._emit_pool_exit(timestep, pp, "reranked_out")
+
+        self.pool = list(new_pool)
+
+        for pp in self.pool:
+            if pp.active_id is None or pp.active_id in old_ids:
+                continue
+            key = str(pp.program)
+            pp.duplicate_candidate = key in self._seen_active_program_keys
+            self._seen_active_program_keys.add(key)
+            self._emit_pool_enter(timestep + 1, pp, "rerank_selected")
+
+    def _init_event_log(self) -> None:
+        if not self.cfg.event_log_dir:
+            return
+        os.makedirs(self.cfg.event_log_dir, exist_ok=True)
+        self.event_log_path = os.path.join(
+            self.cfg.event_log_dir, f"{self.cfg.event_log_name}.jsonl"
+        )
+        self._event_fp = open(self.event_log_path, "w", encoding="utf-8")
+        self._log_event(
+            "run_start",
+            timestep=self.state.time(),
+            loop="v2",
+            config=self._event_config(),
+        )
+        for t, symbol in enumerate(self.state.obs_history):
+            self._emit_observe(t, symbol, None, None, None, warmup=True)
+
+    def _event_config(self) -> Dict[str, Any]:
+        return {
+            "pool_target_size": int(self.cfg.pool_target_size),
+            "validation_window": int(self.cfg.validation_window),
+            "min_time": int(self.cfg.min_time),
+            "alphabet": list(self.cfg.alphabet),
+            "enum_timeout_s": float(self.cfg.enum_timeout_s),
+            "upper_bound": float(self.cfg.upper_bound),
+            "max_frontier": int(self.cfg.max_frontier),
+            "enum_cpus": int(self.cfg.enum_cpus),
+        }
+
+    def _log_event(self, event: str, **payload: Any) -> None:
+        if self._event_fp is None:
+            return
+        self._event_fp.write(
+            json.dumps({"event": event, "wall_time_s": time.time(), **payload}, sort_keys=True)
+            + "\n"
+        )
+        self._event_fp.flush()
+
+    def _emit_observe(
+        self,
+        timestep: int,
+        observed: str,
+        predicted: Optional[str],
+        logloss_bits: Optional[float],
+        incumbent: Optional[PoolPredictor],
+        warmup: bool = False,
+    ) -> None:
+        self._log_event(
+            "observe",
+            timestep=timestep,
+            observed=observed,
+            predicted=predicted,
+            logloss_bits=logloss_bits,
+            active_id=(None if incumbent is None else incumbent.active_id),
+            program_id=(None if incumbent is None else incumbent.program_id),
+            program=(None if incumbent is None else str(incumbent.program)),
+            warmup=bool(warmup),
+        )
+
+    def _emit_pool_enter(self, timestep: int, predictor: PoolPredictor, reason: str) -> None:
+        self._log_event(
+            "pool_enter",
+            timestep=timestep,
+            active_id=predictor.active_id,
+            program_id=predictor.program_id,
+            program=str(predictor.program),
+            source=predictor.source,
+            weight=float(predictor.weight),
+            duplicate_candidate=bool(predictor.duplicate_candidate),
+            reason=reason,
+        )
+
+    def _emit_pool_exit(self, timestep: int, predictor: PoolPredictor, reason: str) -> None:
+        self._log_event(
+            "pool_exit",
+            timestep=timestep,
+            active_id=predictor.active_id,
+            program_id=predictor.program_id,
+            program=str(predictor.program),
+            weight=float(predictor.weight),
+            duplicate_candidate=bool(predictor.duplicate_candidate),
+            reason=reason,
+        )
+
+    def _emit_freeze(
+        self,
+        timestep: int,
+        predictor: PoolPredictor,
+        program_id: int,
+        reason: str,
+    ) -> None:
+        self._log_event(
+            "freeze",
+            timestep=timestep,
+            active_id=predictor.active_id,
+            program_id=program_id,
+            program=str(predictor.program),
+            weight=float(predictor.weight),
+            duplicate_candidate=bool(predictor.duplicate_candidate),
+            reason=reason,
+            incumbent_run_length=int(self._incumbent_run_length),
+        )
+
+    def close(self) -> None:
+        if self._event_fp is None:
+            return
+        self._log_event("run_end", timestep=self.state.time())
+        self._event_fp.close()
+        self._event_fp = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass

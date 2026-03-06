@@ -111,15 +111,18 @@ def run_sequence(
             pool_target_size=3,
             validation_window=6,
             min_time=min_time,
-            enum_timeout_s=3.0,
+            enum_timeout_s=1.0,
             eval_timeout_s=0.02,
             upper_bound=200.0,
             budget_increment=1.5,
             max_frontier=10,
             enum_cpus=enum_cpus,
-            enum_bottom_compile_me=False,
+            enum_bottom_compile_me=False,  # TOOD: what is this and why do I
+          # need it?
             alphabet=tuple(alphabet),
             verbose=True,
+            event_log_dir=event_log_dir,
+            event_log_name=name,
         )
         enumerator = BottomSolverEnumerationController(
             enumeration_debug_hooks_factory=enum_debug_factory,
@@ -135,6 +138,7 @@ def run_sequence(
                 f"Loop=v2 bottom compile_me={cfg.enum_bottom_compile_me} "
                 f"cpus={cfg.enum_cpus}/{total_cpus}"
             )
+        event_log_path = rbii.event_log_path
     else:
         cfg = RBIIConfig(
             pool_target_size=3,
@@ -261,11 +265,11 @@ def main():
         )
 
     ## Simple predictable sequences
-    _run_sequence("all_a", "aaaaaaaaaaaaaaaaaaaa")
-    _run_sequence("alternating_ab", "abababababababababab")
-    _run_sequence("runs_of_3",
-                 "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
-                  )
+    # _run_sequence("all_a", "aaaaaaaaaaaaaaaaaaaa")
+    # _run_sequence("alternating_ab", "abababababababababab")
+    # _run_sequence("runs_of_3",
+    #              "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
+    #               )
 
     ## runs of increasting length
     # run_sequence("runs_of_increasing",
@@ -278,21 +282,21 @@ def main():
     # sequence that forces conditional to be the best
 
     ## random seq
-    # random.seed(0)
-    # def _random_sequence(length: int, alphabet: str) -> str:
-    #     return "".join(random.choices(alphabet, k=length))
-    #
-    # run_sequence("force_if",
-    #              "".join(
-    #                ["aaab"+_random_sequence(random.randint(1,5), "cde")
-    #                       for _ in range(10)]),
-    #              )
+    random.seed(0)
+    def _random_sequence(length: int, alphabet: str) -> str:
+        return "".join(random.choices(alphabet, k=length))
+
+    run_sequence("force_if",
+                 "".join(
+                   ["aaab"+_random_sequence(random.randint(1,5), "cde")
+                          for _ in range(10)]),
+                 )
 
 
-    if args.loop == "v1":
+    if args.loop == "v2":
         _render_viz_for_run(run_event_log_dir)
     else:
-        eprint("Skipping viz render for loop=v2 (no V2 event log format yet).")
+        eprint("Skipping viz render for loop=v1 (visualizer expects V2 logs).")
 
 
 if __name__ == "__main__":
