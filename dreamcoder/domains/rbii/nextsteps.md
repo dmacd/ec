@@ -128,6 +128,36 @@ x must NOT render svg -- use html / js elements for layout, must be dynamic
 
 - edit op that takes a path sequence and then substitutes the function or 
   primitive at that path, if the types line up
+- do we freeze the mutations as prims and not just the predictors???
+  - we want to reuse the info in the mutations as well, so why not?
+- 
+- we probably want to use pool predictors for rec and dreaming, prims 
+  library, not just the frozen ones!
+
+- plan notes
+  - drop the old get_program, should be eval by ref then apply
+  - edit_replace_with_hist_obs should not just be any obs type, same with 
+    programs
+    - i.e. dont duplicate prims for edits, let the edit ref the path to it 
+      then replace with compatible type
+    - a wrap edit makes sense though
+  - Abstraction??
+
+- ugh....complex...requires quoting, effectively, and thats annoying
+- what about a separate transformer pass where we enumerate edits by making 
+  holes in the existing programs?
+  - next step: actually review the current search methodology in more detail
+    - ask gpt pro to come up with a strategy that is simple
+
+- how do i fold prims into the library?
+  - 
+
+## test cases
+
+- have runs of increasing repeat, measure returning perf
+- construct a CL-ish test case with random substrings that repeat in random 
+  orders and measure their error and return time
+
 
 
 ## paper plots

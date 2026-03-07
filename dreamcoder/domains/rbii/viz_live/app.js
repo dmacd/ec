@@ -5,10 +5,12 @@
   const RENDER_BUFFER = 100;
   const ROWS_WIDTH = 220;
   const LANE_STEP = 30;
-  const CARD_WIDTH = 360;
-  const CARD_HEIGHT = 88;
-  const CARD_GAP = 8;
+  const MIN_CARD_WIDTH = 360;
+  const MAX_CARD_WIDTH = 720;
+  const CARD_HEIGHT = 42;
+  const CARD_GAP = 5;
   const BRACKET_X0 = ROWS_WIDTH + 18;
+  const BRACKET_ARM = 12;
 
   const state = {
     mode: window.RBII_BOOTSTRAP.mode,
@@ -32,6 +34,17 @@
     connectorObjects: [],
     renderQueued: false,
     directoryRefreshHandle: null,
+    hoveredTimestep: null,
+    hoveredActiveId: null,
+    renderedStartIndex: null,
+    renderedEndIndex: null,
+    suppressScrollPause: false,
+  };
+
+  const visibleDom = {
+    bracketNodesByActiveId: new Map(),
+    cardNodesByActiveId: new Map(),
+    connectorEntriesByActiveId: new Map(),
   };
 
   const refs = {
@@ -87,10 +100,121 @@
   }
 
   function clearConnectors() {
+    const removed = new Set();
     for (const connector of state.connectorObjects) {
+      if (removed.has(connector)) {
+        continue;
+      }
       connector.remove();
+      removed.add(connector);
+    }
+    for (const entries of visibleDom.connectorEntriesByActiveId.values()) {
+      for (const entry of entries) {
+        if (removed.has(entry.connector)) {
+          continue;
+        }
+        entry.connector.remove();
+        removed.add(entry.connector);
+      }
     }
     state.connectorObjects = [];
+  }
+
+  function poolHighlightedActiveIds() {
+    if (Number.isInteger(state.hoveredTimestep) && state.derived) {
+      const snapshot = state.derived.poolSnapshotsByTimestep.get(state.hoveredTimestep);
+      if (snapshot && Array.isArray(snapshot.pool)) {
+        return new Set(
+          snapshot.pool
+            .map((member) => member.active_id)
+            .filter((activeId) => Number.isInteger(activeId)),
+        );
+      }
+    }
+    return new Set();
+  }
+
+  function pushVisibleNode(nodeMap, activeId, node) {
+    if (!Number.isInteger(activeId)) {
+      return;
+    }
+    const bucket = nodeMap.get(activeId) || [];
+    bucket.push(node);
+    nodeMap.set(activeId, bucket);
+  }
+
+  function pushConnectorEntry(activeId, entry) {
+    if (!Number.isInteger(activeId)) {
+      return;
+    }
+    const bucket = visibleDom.connectorEntriesByActiveId.get(activeId) || [];
+    bucket.push(entry);
+    visibleDom.connectorEntriesByActiveId.set(activeId, bucket);
+  }
+
+  function toggleVisibleClass(nodeMap, className, predicate) {
+    for (const [activeId, nodes] of nodeMap.entries()) {
+      const enabled = predicate(activeId);
+      for (const node of nodes) {
+        node.classList.toggle(className, enabled);
+      }
+    }
+  }
+
+  function applyHoverHighlights() {
+    const poolIds = poolHighlightedActiveIds();
+    const focusedActiveId = Number.isInteger(state.hoveredActiveId) ? state.hoveredActiveId : null;
+
+    toggleVisibleClass(
+      visibleDom.cardNodesByActiveId,
+      "pool-highlighted",
+      (activeId) => poolIds.has(activeId) || activeId === focusedActiveId,
+    );
+    toggleVisibleClass(
+      visibleDom.bracketNodesByActiveId,
+      "highlighted",
+      (activeId) => poolIds.has(activeId) || activeId === focusedActiveId,
+    );
+
+    for (const [activeId, entries] of visibleDom.connectorEntriesByActiveId.entries()) {
+      const highlighted = poolIds.has(activeId) || activeId === focusedActiveId;
+      for (const entry of entries) {
+        if (entry.highlighted === highlighted) {
+          continue;
+        }
+        entry.connector.remove();
+        entry.connector = createConnector(entry.anchor, entry.card, entry.middleX, {
+          highlighted,
+          solid: entry.solid,
+        });
+        entry.highlighted = highlighted;
+      }
+    }
+  }
+
+  function applyDashedConnectorStyle(connector, color) {
+    for (const segment of connector._segments || []) {
+      const width = parseFloat(segment.style.width || "0");
+      const height = parseFloat(segment.style.height || "0");
+      const direction = width >= height ? "to right" : "to bottom";
+      segment.style.background = `repeating-linear-gradient(${direction}, ${color} 0 7px, transparent 7px 12px)`;
+    }
+  }
+
+  function createConnector(anchor, card, middleX, options = {}) {
+    const highlighted = Boolean(options.highlighted);
+    const solid = Boolean(options.solid);
+    const color = highlighted ? "#8f4b26" : "#6b6257";
+    const connector = new window.LeaderLine(anchor, card, {
+      container: refs.connectorLayer,
+      color,
+      size: highlighted ? 4 : 2,
+      middleX,
+    });
+    if (!solid) {
+      applyDashedConnectorStyle(connector, color);
+    }
+    return connector;
   }
 
   function formatBits(value) {
@@ -401,6 +525,27 @@
     return { startIndex, endIndex, rowTopByTimestep, maxLane };
   }
 
+  function needsViewportRender() {
+    if (!state.derived || state.derived.timesteps.length === 0) {
+      return false;
+    }
+    if (state.renderedStartIndex === null || state.renderedEndIndex === null) {
+      return true;
+    }
+    const scrollTop = refs.timelineScroll.scrollTop;
+    const viewportHeight = refs.timelineScroll.clientHeight || 0;
+    const visibleStart = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT));
+    const visibleEnd = Math.min(
+      state.derived.timesteps.length - 1,
+      Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT),
+    );
+    const rerenderGuard = Math.max(16, Math.floor(RENDER_BUFFER / 2));
+    return (
+      visibleStart < (state.renderedStartIndex + rerenderGuard) ||
+      visibleEnd > (state.renderedEndIndex - rerenderGuard)
+    );
+  }
+
   function selectedSnapshot() {
     if (!state.derived || state.selectedTimestep === null) {
       return null;
@@ -554,19 +699,34 @@
     clearConnectors();
     refs.rowsLayer.innerHTML = "";
     refs.overlayLayer.innerHTML = "";
+    visibleDom.bracketNodesByActiveId = new Map();
+    visibleDom.cardNodesByActiveId = new Map();
+    visibleDom.connectorEntriesByActiveId = new Map();
 
     if (!state.derived || state.derived.timesteps.length === 0) {
+      state.renderedStartIndex = null;
+      state.renderedEndIndex = null;
       refs.timelineSurface.style.height = `${ROW_HEIGHT}px`;
       refs.timelineSurface.style.width = `${ROWS_WIDTH + 480}px`;
       return;
     }
 
     const view = visibleWindow();
+    state.renderedStartIndex = view.startIndex;
+    state.renderedEndIndex = view.endIndex;
     const timesteps = state.derived.timesteps;
     const startTimestep = timesteps[view.startIndex];
     const endTimestep = timesteps[view.endIndex];
     const totalHeight = timesteps.length * ROW_HEIGHT;
-    const totalWidth = BRACKET_X0 + ((view.maxLane + 2) * LANE_STEP) + 120 + CARD_WIDTH + 40;
+    const cardX = BRACKET_X0 + ((view.maxLane + 1) * LANE_STEP) + 28;
+    const dynamicCardWidth = Math.max(
+      MIN_CARD_WIDTH,
+      Math.min(
+        MAX_CARD_WIDTH,
+        refs.timelineScroll.clientWidth - cardX - 32,
+      ),
+    );
+    const totalWidth = Math.max(refs.timelineScroll.clientWidth - 2, cardX + dynamicCardWidth + 32);
     refs.timelineSurface.style.height = `${totalHeight}px`;
     refs.timelineSurface.style.width = `${totalWidth}px`;
 
@@ -594,24 +754,38 @@
         <div class="row-freeze">${renderFreezeText(timestep)}</div>
       `;
       node.addEventListener("click", () => selectTimestep(timestep, { pause: true }));
+      node.addEventListener("mouseenter", () => {
+        state.hoveredTimestep = timestep;
+        applyHoverHighlights();
+      });
+      node.addEventListener("mouseleave", () => {
+        if (state.hoveredTimestep === timestep) {
+          state.hoveredTimestep = null;
+          applyHoverHighlights();
+        }
+      });
       refs.rowsLayer.appendChild(node);
     }
 
     const visibleEpisodes = state.derived.episodes.filter((episode) => episode.endT >= startTimestep && episode.startT <= endTimestep);
-    const layouts = layoutEpisodes(visibleEpisodes, view, timesteps);
+    const layouts = layoutEpisodes(visibleEpisodes, view, timesteps, {
+      cardWidth: dynamicCardWidth,
+      cardX,
+    });
 
     for (const layout of layouts) {
       const bracket = document.createElement("div");
       bracket.className = "scope-bracket";
-      bracket.style.left = `${layout.bracketX}px`;
+      bracket.style.left = `${layout.bracketX - BRACKET_ARM}px`;
       bracket.style.top = `${layout.y1}px`;
       bracket.style.height = `${Math.max(2, layout.y2 - layout.y1)}px`;
       bracket.addEventListener("click", () => selectTimestep(layout.episode.startT, { pause: true }));
       refs.overlayLayer.appendChild(bracket);
+      pushVisibleNode(visibleDom.bracketNodesByActiveId, layout.episode.activeId, bracket);
 
       const anchor = document.createElement("div");
       anchor.className = "scope-anchor";
-      anchor.style.left = `${layout.bracketX + 11}px`;
+      anchor.style.left = `${layout.anchorX}px`;
       anchor.style.top = `${layout.anchorY}px`;
       refs.overlayLayer.appendChild(anchor);
 
@@ -619,19 +793,22 @@
       card.className = "program-card";
       if (layout.episode.usedForPrediction) {
         card.classList.add("incumbent");
+      } else {
+        bracket.classList.add("secondary");
       }
       if (layout.episode.duplicateCandidate) {
         card.classList.add("duplicate");
       }
+      card.style.width = `${layout.cardWidth}px`;
       card.style.left = `${layout.boxX}px`;
       card.style.top = `${layout.boxY}px`;
       card.dataset.timestep = String(layout.episode.startT);
       card.innerHTML = `
-        <div class="program-card-header">
-          <span>@${layout.episode.activeId}${layout.episode.programId === null ? "" : ` [#${layout.episode.programId}]`}</span>
+        <div class="program-card-row">
+          <span class="program-id">@${layout.episode.activeId}${layout.episode.programId === null ? "" : ` [#${layout.episode.programId}]`}</span>
           <span class="program-flags"></span>
+          <span class="program-text">${escapeHtml(layout.episode.programText)}</span>
         </div>
-        <div class="program-text">${escapeHtml(layout.episode.programText)}</div>
       `;
       const flags = card.querySelector(".program-flags");
       if (layout.episode.usedForPrediction) {
@@ -640,20 +817,39 @@
       if (layout.episode.duplicateCandidate) {
         flags.appendChild(chip("duplicate"));
       }
+      card.addEventListener("mouseenter", () => {
+        state.hoveredActiveId = layout.episode.activeId;
+        applyHoverHighlights();
+      });
+      card.addEventListener("mouseleave", () => {
+        if (state.hoveredActiveId === layout.episode.activeId) {
+          state.hoveredActiveId = null;
+          applyHoverHighlights();
+        }
+      });
       card.addEventListener("click", () => selectTimestep(layout.episode.startT, { pause: true }));
       refs.overlayLayer.appendChild(card);
+      pushVisibleNode(visibleDom.cardNodesByActiveId, layout.episode.activeId, card);
 
-      const connector = new window.LeaderLine(anchor, card, {
-        container: refs.connectorLayer,
-        color: "#6b6257",
-        size: 2,
-        middleX: layout.routerX,
+      const connector = createConnector(anchor, card, layout.routerX, {
+        highlighted: false,
+        solid: layout.episode.usedForPrediction,
       });
       state.connectorObjects.push(connector);
+      pushConnectorEntry(layout.episode.activeId, {
+        anchor,
+        card,
+        connector,
+        highlighted: false,
+        middleX: layout.routerX,
+        solid: layout.episode.usedForPrediction,
+      });
     }
+    applyHoverHighlights();
   }
 
-  function layoutEpisodes(episodes, view, timesteps) {
+  function layoutEpisodes(episodes, view, timesteps, options) {
+    const { cardWidth, cardX } = options;
     const rowIndexByTimestep = new Map();
     timesteps.forEach((timestep, index) => rowIndexByTimestep.set(timestep, index));
     const layouts = [];
@@ -684,6 +880,7 @@
         boxX: 0,
         boxY: 0,
         anchorY: 0,
+        anchorX: 0,
       });
     }
 
@@ -696,14 +893,14 @@
       }
       return a.episode.activeId - b.episode.activeId;
     });
-    const routerX0 = BRACKET_X0 + ((view.maxLane + 1) * LANE_STEP) + 16;
-    const routerStep = 12;
-    const maxRouterX = routerX0 + Math.max(0, sortedForRouter.length - 1) * routerStep;
-    const boxX = maxRouterX + 42;
+    const routerX0 = cardX - 18;
+    const routerStep = 8;
 
     sortedForRouter.forEach((layout, index) => {
       layout.routerX = routerX0 + (index * routerStep);
-      layout.boxX = boxX;
+      layout.boxX = cardX;
+      layout.cardWidth = cardWidth;
+      layout.anchorX = layout.bracketX;
     });
 
     const ordered = [...sortedForRouter].sort((a, b) => a.desiredCenter - b.desiredCenter);
@@ -836,7 +1033,11 @@
     if (index < 0) {
       return;
     }
+    state.suppressScrollPause = true;
     refs.timelineScroll.scrollTop = Math.max(0, (index * ROW_HEIGHT) - refs.timelineScroll.clientHeight + (ROW_HEIGHT * 4));
+    requestAnimationFrame(() => {
+      state.suppressScrollPause = false;
+    });
   }
 
   async function ensureOlderHistory() {
@@ -853,11 +1054,13 @@
     state.historyLoading = true;
     try {
       const oldHeight = refs.timelineSurface.offsetHeight;
+      const previousTop = refs.timelineScroll.scrollTop;
       const nextStart = Math.max(state.firstTimestep, state.loadedMin - HISTORY_WINDOW - 1);
       const nextEnd = state.loadedMin - 1;
       await loadChunk(nextStart, nextEnd);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
       const newHeight = refs.timelineSurface.offsetHeight;
-      refs.timelineScroll.scrollTop += Math.max(0, newHeight - oldHeight);
+      refs.timelineScroll.scrollTop = previousTop + Math.max(0, newHeight - oldHeight);
     } finally {
       state.historyLoading = false;
     }
@@ -909,6 +1112,8 @@
     state.loadedMax = null;
     state.derived = null;
     state.selectedTimestep = null;
+    state.renderedStartIndex = null;
+    state.renderedEndIndex = null;
 
     state.meta = await fetchJson(`/api/meta?path=${encodeURIComponent(path)}`);
     state.runComplete = Boolean(state.meta.run_complete);
@@ -1006,7 +1211,19 @@
     });
 
     refs.timelineScroll.addEventListener("scroll", () => {
-      scheduleRender();
+      state.hoveredTimestep = null;
+      state.hoveredActiveId = null;
+      applyHoverHighlights();
+      const nearBottom = (
+        refs.timelineScroll.scrollTop + refs.timelineScroll.clientHeight
+      ) >= (refs.timelineScroll.scrollHeight - (ROW_HEIGHT * 3));
+      if (!state.suppressScrollPause && !nearBottom && !state.paused) {
+        state.paused = true;
+        scheduleRender();
+      }
+      if (needsViewportRender()) {
+        scheduleRender();
+      }
       void ensureOlderHistory();
     });
 
@@ -1030,5 +1247,6 @@
       state.directoryRefreshHandle = null;
     }
   });
+  window.addEventListener("resize", () => scheduleRender());
   void initialize();
 })();

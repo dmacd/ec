@@ -28,6 +28,7 @@ html,
 body {
   margin: 0;
   height: 100%;
+  overflow: hidden;
   color: var(--text);
   background:
     radial-gradient(circle at top left, #fff7ee 0, #fff7ee 20%, transparent 50%),
@@ -56,9 +57,10 @@ button:hover {
 .app-shell {
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--inspector-width);
-  min-height: 100vh;
+  height: 100vh;
   gap: 14px;
   padding: 14px;
+  overflow: hidden;
 }
 
 .sidebar,
@@ -69,6 +71,7 @@ button:hover {
   border-radius: 22px;
   box-shadow: var(--shadow);
   backdrop-filter: blur(8px);
+  overflow: hidden;
 }
 
 .sidebar,
@@ -265,6 +268,18 @@ button:hover {
   inset: 0;
 }
 
+.rows-layer {
+  z-index: 1;
+}
+
+.connector-layer {
+  z-index: 2;
+}
+
+.overlay-layer {
+  z-index: 3;
+}
+
 .connector-layer {
   pointer-events: none;
 }
@@ -313,16 +328,22 @@ button:hover {
 .scope-bracket {
   position: absolute;
   width: 12px;
-  border-left: 2px solid #5e5a55;
+  --scope-color: #5e5a55;
+  --scope-width: 2px;
+  background:
+    linear-gradient(var(--scope-color), var(--scope-color))
+    right top / var(--scope-width) 100%
+    no-repeat;
 }
 
 .scope-bracket::before,
 .scope-bracket::after {
   content: "";
   position: absolute;
-  left: 0;
+  right: 0;
   width: 10px;
-  border-top: 2px solid #5e5a55;
+  height: var(--scope-width);
+  background: var(--scope-color);
 }
 
 .scope-bracket::before {
@@ -341,13 +362,12 @@ button:hover {
 
 .program-card {
   position: absolute;
-  width: var(--card-width);
-  min-height: 88px;
+  min-height: 0;
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: 14px;
   background: rgba(255, 250, 242, 0.96);
   box-shadow: 0 10px 18px rgba(62, 47, 27, 0.08);
-  padding: 10px 12px;
+  padding: 7px 10px;
   cursor: pointer;
 }
 
@@ -355,17 +375,75 @@ button:hover {
   border-color: var(--accent);
 }
 
+.program-card:hover,
+.program-card.pool-highlighted {
+  border-color: var(--accent);
+  background: #fffdf8;
+  box-shadow: 0 12px 22px rgba(143, 75, 38, 0.18);
+}
+
+.scope-bracket.highlighted,
+.scope-bracket.highlighted::before,
+.scope-bracket.highlighted::after {
+  --scope-color: var(--accent);
+}
+
+.scope-bracket.secondary,
+.scope-bracket.secondary::before,
+.scope-bracket.secondary::after {
+  --scope-dash: 5px;
+  --scope-gap: 4px;
+}
+
+.scope-bracket.secondary {
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      var(--scope-color) 0 var(--scope-dash),
+      transparent var(--scope-dash) calc(var(--scope-dash) + var(--scope-gap))
+    )
+    right top / var(--scope-width) 100%
+    no-repeat;
+}
+
+.scope-bracket.secondary::before,
+.scope-bracket.secondary::after {
+  background:
+    repeating-linear-gradient(
+      to left,
+      var(--scope-color) 0 var(--scope-dash),
+      transparent var(--scope-dash) calc(var(--scope-dash) + var(--scope-gap))
+    )
+    right top / 100% var(--scope-width)
+    no-repeat;
+}
+
+.scope-bracket.highlighted {
+  --scope-width: 4px;
+}
+
 .program-card.duplicate {
   border-style: dashed;
 }
 
-.program-card-header {
+.program-card-row {
+  display: flex;
   align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.program-id {
+  flex: 0 0 auto;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #3c3123;
 }
 
 .program-flags {
   display: inline-flex;
   gap: 6px;
+  flex: 0 0 auto;
 }
 
 .program-text,
@@ -380,10 +458,17 @@ button:hover {
 }
 
 .program-text {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  margin-top: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.program-card .chip {
+  padding: 2px 6px;
+  font-size: 11px;
 }
 
 .inspector-header {
