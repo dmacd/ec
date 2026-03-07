@@ -84,6 +84,13 @@ The active pool and frozen store are intentionally separate concerns.
     - No backward-compatibility shim to the old V1 viz schema is required
       unless explicitly requested.
 
+14. Live monitoring uses a dedicated V2 live schema.
+    - `run_start` carries `schema_version = "rbii_v2_live_1"`.
+    - Every observed timestep, including warmup rows, must emit exactly one
+      post-step `pool_snapshot`.
+    - The live webapp consumes raw closed timestep groups rather than a
+      server-computed render model.
+
 ## Current Per-Step Flow
 
 At each observed symbol:
@@ -115,7 +122,8 @@ Current V2 logs are JSONL and use these events:
 3. `pool_enter`
 4. `pool_exit`
 5. `freeze`
-6. `run_end`
+6. `pool_snapshot`
+7. `run_end`
 
 Key schema decisions:
 
@@ -140,6 +148,10 @@ Key schema decisions:
 
 5. `pool_exit` is logged at the last timestep for which a predictor was active
    (`t` for a predictor dropped after observing timestep `t`).
+
+6. `pool_snapshot(t)` is the authoritative post-step pool for timestep `t`.
+   - It is emitted after rerank and freeze.
+   - It is the source of truth for the live clicked-pool inspector.
 
 ## Viz Semantics
 

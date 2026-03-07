@@ -355,6 +355,7 @@ def test_v2_bottom_solver_smoke():
 
 def test_v2_event_log_and_viz_smoke(tmp_path: Path):
     from dreamcoder.domains.rbii.rbii_loop_v2 import CandidateProposal, RBIILoopV2, RBIIConfigV2
+    from dreamcoder.domains.rbii.rbii_viz_index import LIVE_SCHEMA_VERSION
     from dreamcoder.domains.rbii.rbii_viz_graph import _build_svg_for_log
 
     state = _seed_state("a")
@@ -394,9 +395,22 @@ def test_v2_event_log_and_viz_smoke(tmp_path: Path):
 
     events = [json.loads(row) for row in rows]
     assert events[0]["event"] == "run_start"
+    assert events[0]["schema_version"] == LIVE_SCHEMA_VERSION
     assert any(ev["event"] == "pool_enter" for ev in events)
     assert any(ev["event"] == "freeze" for ev in events)
     assert events[-1]["event"] == "run_end"
+
+    snapshots = [ev for ev in events if ev["event"] == "pool_snapshot"]
+    observes = [ev for ev in events if ev["event"] == "observe"]
+    assert len(snapshots) == len(observes)
+    assert snapshots[0]["warmup"] is True
+    assert snapshots[0]["pool"] == []
+    non_warmup_snapshots = [ev for ev in snapshots if not ev.get("warmup")]
+    assert non_warmup_snapshots
+    latest_snapshot = non_warmup_snapshots[-1]
+    weights = [member["weight"] for member in latest_snapshot["pool"]]
+    assert weights == sorted(weights, reverse=True)
+    assert sum(1 for member in latest_snapshot["pool"] if member["incumbent"]) == 1
 
     observe_rows = [ev for ev in events if ev["event"] == "observe" and not ev.get("warmup")]
     assert observe_rows

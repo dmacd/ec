@@ -96,6 +96,8 @@ def _triple_eq(a: str):
 def _and(a: bool):
   return lambda b: bool(a and b)
 
+def _not(a: bool):
+  return not a
 
 def _if(c: bool):
   # polymorphic if: bool -> t0 -> t0 -> t0
@@ -197,6 +199,7 @@ def make_rbii_grammar(
     _primitive("triple_eq", arrow(tcharacter, tcharacter, tcharacter, tbool),
                _triple_eq))
   prims.append(_primitive("and", arrow(tbool, tbool, tbool), _and))
+  prims.append(_primitive("not", arrow(tbool, tbool), _not))
 
   # successor (for aaabbbccc... pattern)
   prims.append(_primitive("succ_char", arrow(tcharacter, tcharacter),

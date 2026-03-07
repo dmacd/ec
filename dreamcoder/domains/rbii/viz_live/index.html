@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RBII Live Timeline</title>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <script>
+      window.RBII_BOOTSTRAP = __RBII_BOOTSTRAP__;
+    </script>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <div class="eyebrow">RBII Live</div>
+          <h1>Timeline Monitor</h1>
+          <div class="sidebar-path" id="browse-path"></div>
+        </div>
+        <div class="sidebar-section-title">Entries</div>
+        <div class="entry-list" id="entry-list"></div>
+      </aside>
+
+      <main class="main-pane">
+        <header class="toolbar">
+          <div>
+            <div class="eyebrow">Selected Log</div>
+            <div class="toolbar-title" id="log-title">No log selected</div>
+          </div>
+          <div class="toolbar-actions">
+            <span class="status-pill" id="log-status">idle</span>
+            <button type="button" id="pause-button">Pause</button>
+            <label class="toggle">
+              <input type="checkbox" id="follow-toggle" checked>
+              <span>Follow latest</span>
+            </label>
+          </div>
+        </header>
+
+        <section class="timeline-wrap">
+          <div class="banner hidden" id="unsupported-banner"></div>
+          <div class="timeline-scroll" id="timeline-scroll">
+            <div class="timeline-surface" id="timeline-surface">
+              <div class="rows-layer" id="rows-layer"></div>
+              <div class="overlay-layer" id="overlay-layer"></div>
+              <div class="connector-layer" id="connector-layer"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <aside class="inspector">
+        <div class="sidebar-section-title">Pool Inspector</div>
+        <div class="inspector-header" id="inspector-header">Select a timestep</div>
+        <div class="inspector-subtitle" id="inspector-subtitle"></div>
+        <div class="pool-list" id="pool-list"></div>
+      </aside>
+    </div>
+
+    <script src="/static/vendor/leader-line.min.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

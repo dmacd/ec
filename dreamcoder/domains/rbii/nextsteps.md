@@ -89,22 +89,39 @@ x restore enum debug hooks
 x viz fixes
   x need frozen id and pool id separate!
   x separate elbows
-  
+
+
 - "force_if" sequence
   - why does it fail totally? 
     - what is keeping any programs from being accepted?
-      - maybe the MDL criterion is too strict when a "good" solution isn't 
+      x maybe the MDL criterion is too strict when a "good" solution isn't 
         quite possible?
       - maybe the program that compares the last 3 symbols to a and predicts 
         b is not accesible?
         - we cant construct characters directly so it will already be very hard!
-    - what if programs are allowed to express "no opinion"
-      - 
+    - > what if programs are allowed to express "no opinion" ?? 
+  - why does it get some partial bits extracted but not continue and notice 
+    the actual pattern?
+    - probably need better incremental transforms i.e. real transformers
+    - logical NOT would probably help too?
+    - double check if conds are being evaluated properly at runtime...they 
+      might NOT be using the right state????
+  - try: make it easier "aaaaaabdddaaaaabdaaaaabdddd...." (random number of 
+    d's to prevent cycle dectection but not so many its hard to pick up)
+  - **double-check that ifs are actually evaluated with the right arguments!**
+    - try eager-if variant that doesnt get compiled
 
 - experimental questions
   - will increasing the pool size give borderline programs more 
     opportunity to become proven i.e. edge out competitors because they have 
     more tolerance to noise or small differences in performance?
+
+## streaming viz 
+x make a javascript explorer that lets us probe and unfold stuff?
+x key feature --> streaming update?
+x MUST stream events from server, cant send the whole thing at once
+x must NOT render svg -- use html / js elements for layout, must be dynamic
+
 
 
 ## transformers
@@ -175,6 +192,3 @@ x run it
 
 - incorp recognition and dream phases?
 
-## viz ideas
-- make a javascript explorer that lets us probe and unfold stuff?
-- key feature --> streaming update?

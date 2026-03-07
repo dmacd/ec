@@ -5,10 +5,16 @@
 
 import bin.binutil  # alt import if called as module
 import argparse
+import json
 import os
 import subprocess
 import sys
 import random
+import time
+import urllib.error
+import urllib.request
+import webbrowser
+from urllib.parse import quote
 
 from dreamcoder.enumeration import EnumerationDebugHook
 from dreamcoder.utilities import eprint
@@ -43,6 +49,133 @@ class _FileEnumerationDebugHook(EnumerationDebugHook):
             f.write("-------\n")
 
 
+LIVE_VIZ_HOST = "127.0.0.1"
+LIVE_VIZ_PORT = 8765
+
+
+def _live_viz_base_url() -> str:
+    return f"http://{LIVE_VIZ_HOST}:{LIVE_VIZ_PORT}"
+
+
+def _probe_live_viz_server():
+    try:
+        with urllib.request.urlopen(f"{_live_viz_base_url()}/healthz", timeout=0.5) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return None
+
+
+def _ensure_live_viz_server(base_dir: str) -> str | None:
+    expected_base_dir = os.path.abspath(base_dir)
+    status = _probe_live_viz_server()
+    if status is not None:
+        actual_base_dir = os.path.abspath(str(status.get("base_dir", "")))
+        if actual_base_dir != expected_base_dir:
+            eprint(
+                "WARNING: live viz server already running with different base dir:",
+                actual_base_dir,
+            )
+            return None
+        return _live_viz_base_url()
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "dreamcoder.domains.rbii.rbii_viz_live",
+        "--base-dir",
+        expected_base_dir,
+        "--host",
+        LIVE_VIZ_HOST,
+        "--port",
+        str(LIVE_VIZ_PORT),
+    ]
+    subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        status = _probe_live_viz_server()
+        if status is None:
+            time.sleep(0.25)
+            continue
+        actual_base_dir = os.path.abspath(str(status.get("base_dir", "")))
+        if actual_base_dir == expected_base_dir:
+            return _live_viz_base_url()
+        eprint(
+            "WARNING: live viz server started with unexpected base dir:",
+            actual_base_dir,
+        )
+        return None
+
+    eprint("WARNING: live viz server did not become ready.")
+    return None
+
+
+def _open_live_run_page(server_url: str | None, base_dir: str, run_dir: str) -> None:
+    if not server_url:
+        return
+    rel_run_dir = os.path.relpath(run_dir, base_dir).replace(os.sep, "/")
+    webbrowser.open(f"{server_url}/browse/{quote(rel_run_dir)}")
+
+
+def _write_live_link_file(log_path: str, base_dir: str) -> None:
+    rel_log_path = os.path.relpath(log_path, base_dir).replace(os.sep, "/")
+    live_url = f"{_live_viz_base_url()}/view/{quote(rel_log_path)}"
+    link_path = os.path.splitext(log_path)[0] + ".live.html"
+    base_dir_abs = os.path.abspath(base_dir)
+    with open(link_path, "w", encoding="utf-8") as handle:
+        handle.write(
+            f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>RBII Live Log Link</title>
+    <style>
+      body {{
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #f5f1ea;
+        color: #2b241b;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+      }}
+      main {{
+        max-width: 640px;
+        padding: 32px;
+        border: 1px solid #c9bba7;
+        border-radius: 20px;
+        background: #fffaf2;
+      }}
+      a {{
+        color: #8f4b26;
+        word-break: break-all;
+      }}
+      code {{
+        font-family: Menlo, Consolas, Monaco, "Courier New", monospace;
+      }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>RBII Live Log</h1>
+      <p>Open this log in the local live visualizer:</p>
+      <p><a href="{live_url}">{live_url}</a></p>
+      <p>If the page does not load, start:</p>
+      <p><code>PYTHONPATH="$PWD" ./ve/bin/python -m dreamcoder.domains.rbii.rbii_viz_live --base-dir {base_dir_abs}</code></p>
+    </main>
+  </body>
+</html>
+"""
+        )
+
+
 def _next_run_subdir(base_dir: str) -> str:
     os.makedirs(base_dir, exist_ok=True)
     max_idx = 0
@@ -74,6 +207,7 @@ def run_sequence(
     name: str,
     seq: str,
     event_log_dir: str,
+    base_event_log_dir: str,
     loop_version: str,
     enum_cpus: int,
 ) -> None:
@@ -178,6 +312,8 @@ def run_sequence(
         rbii.close()
     if event_log_path:
         eprint(f"Event log written: {event_log_path}")
+        if loop_version == "v2":
+            _write_live_link_file(event_log_path, base_event_log_dir)
 
     eprint("\nFinal:")
     eprint(f"  total_obs={len(state.obs_history)}")
@@ -254,6 +390,10 @@ def main():
 
     run_event_log_dir = _next_run_subdir(base_event_log_dir)
     eprint(f"Run output dir: {run_event_log_dir}")
+    live_server_url = None
+    if args.loop == "v2":
+        live_server_url = _ensure_live_viz_server(base_event_log_dir)
+        _open_live_run_page(live_server_url, base_event_log_dir, run_event_log_dir)
 
 
     def _run_sequence(name, seq):
@@ -261,37 +401,38 @@ def main():
             name=name,
             seq=seq,
             event_log_dir=run_event_log_dir,
+            base_event_log_dir=base_event_log_dir,
             loop_version=args.loop,
             enum_cpus=enum_cpus,
         )
 
     ## Simple predictable sequences
     # _run_sequence("all_a", "aaaaaaaaaaaaaaaaaaaa")
-    # _run_sequence("alternating_ab", "abababababababababab")
-    # _run_sequence("runs_of_3",
-    #              "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
-    #               )
+    _run_sequence("alternating_ab", "abababababababababab")
+    _run_sequence("runs_of_3",
+                 "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
+                  )
 
     ## runs of increasting length
-    # run_sequence("runs_of_increasing",
-    #              "aaabbbcccdddeee"
-    #                   "aaaabbbbccccddddeeee"
-    #                   "aaaaabbbbbcccccdddddeeeee"
-    #                   "aaaaaabbbbbbccccccddddddeeeeee",
-    #              )
+    _run_sequence("runs_of_increasing",
+                 "aaabbbcccdddeee"
+                      "aaaabbbbccccddddeeee"
+                      "aaaaabbbbbcccccdddddeeeee"
+                      "aaaaaabbbbbbccccccddddddeeeeee",
+                 )
 
     # sequence that forces conditional to be the best
 
     ## random seq
-    random.seed(0)
-    def _random_sequence(length: int, alphabet: str) -> str:
-        return "".join(random.choices(alphabet, k=length))
-
-    _run_sequence("force_if",
-                 "".join(
-                   ["aaab"+_random_sequence(random.randint(1,5), "cde")
-                          for _ in range(10)]),
-                 )
+    # random.seed(0)
+    # def _random_sequence(length: int, alphabet: str) -> str:
+    #     return "".join(random.choices(alphabet, k=length))
+    #
+    # _run_sequence("force_if",
+    #              "".join(
+    #                ["aaaab"+_random_sequence(random.randint(1,5), "cde")
+    #                       for _ in range(10)]),
+    #              )
 
 
     if args.loop == "v2":

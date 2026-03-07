@@ -21,6 +21,8 @@ from .rbii_loss import CategoricalLogLossModel, RBIIWindowLossModel
 from .rbii_state import RBIIState
 from .rbii_types import RBIIEvalState, trbii_state
 
+LIVE_SCHEMA_VERSION = "rbii_v2_live_1"
+
 
 @dataclass
 class PoolPredictor:
@@ -508,6 +510,10 @@ class RBIILoopV2:
 
         if t >= int(self.cfg.min_time):
             self._explore_select_and_freeze(timestep=t)
+        else:
+            self._update_incumbent()
+
+        self._emit_pool_snapshot(timestep=t, warmup=False)
 
     def _explore_select_and_freeze(self, timestep: int) -> None:
         task = self._make_window_task(timestep)
@@ -743,10 +749,12 @@ class RBIILoopV2:
             "run_start",
             timestep=self.state.time(),
             loop="v2",
+            schema_version=LIVE_SCHEMA_VERSION,
             config=self._event_config(),
         )
         for t, symbol in enumerate(self.state.obs_history):
             self._emit_observe(t, symbol, None, None, None, warmup=True)
+            self._emit_pool_snapshot(timestep=t, warmup=True)
 
     def _event_config(self) -> Dict[str, Any]:
         return {
@@ -832,6 +840,36 @@ class RBIILoopV2:
             duplicate_candidate=bool(predictor.duplicate_candidate),
             reason=reason,
             incumbent_run_length=int(self._incumbent_run_length),
+        )
+
+    def _emit_pool_snapshot(self, timestep: int, warmup: bool) -> None:
+        ranked_pool = sorted(self.pool, key=lambda predictor: predictor.weight, reverse=True)
+        incumbent_active_id = None
+        if ranked_pool:
+            incumbent = ranked_pool[0]
+            incumbent_active_id = incumbent.active_id
+
+        pool_rows = []
+        for rank, predictor in enumerate(ranked_pool):
+            pool_rows.append(
+                {
+                    "rank": rank,
+                    "active_id": predictor.active_id,
+                    "program_id": predictor.program_id,
+                    "program": str(predictor.program),
+                    "weight": float(predictor.weight),
+                    "source": predictor.source,
+                    "duplicate_candidate": bool(predictor.duplicate_candidate),
+                    "incumbent": predictor.active_id == incumbent_active_id,
+                }
+            )
+
+        self._log_event(
+            "pool_snapshot",
+            timestep=timestep,
+            prediction_timestep=timestep + 1,
+            warmup=bool(warmup),
+            pool=pool_rows,
         )
 
     def close(self) -> None:
