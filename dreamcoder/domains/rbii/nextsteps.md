@@ -45,6 +45,15 @@ x restore enum debug hooks
     branches
 
   - need loss ranking in pool to deal with random (unpredictable) sequences
+  - > NEXT STEP: keep working on a test case that forces if
+    x increase timeout
+    - larger pool?
+    - ??
+    - UGH WTF
+      - make a debug method to measure likehilood / check that a given 
+        program can be realized within timeout/budget
+        - then check it on the test case
+  - > need a better way to do integration tests on restricted vocab
 
 - Arthur's test case: 
   - make a longer random string
@@ -124,6 +133,8 @@ x must NOT render svg -- use html / js elements for layout, must be dynamic
 
 
 
+
+
 ## transformers
 
 - edit op that takes a path sequence and then substitutes the function or 
@@ -143,14 +154,26 @@ x must NOT render svg -- use html / js elements for layout, must be dynamic
     - a wrap edit makes sense though
   - Abstraction??
 
-- ugh....complex...requires quoting, effectively, and thats annoying
+x ugh....complex...requires quoting, effectively, and thats annoying
 - what about a separate transformer pass where we enumerate edits by making 
   holes in the existing programs?
   - next step: actually review the current search methodology in more detail
     - ask gpt pro to come up with a strategy that is simple
+  - should we ditch the compilation thing totally --> test this before going 
+    down a path that depends on it!!!!
+
+x FIX high order skeleton expansion issues
+  x -> can I even? or better to just start over on a better path
+ 
+
+- next step
+  - revisit why transformers are needed in the first place....
+    - this was OOPS inspired...is there some fundamental reason? seems that 
+      its just way hard to get mutual K out without access to the code
+  - review joint grammar proposal, see if its workable
 
 - how do i fold prims into the library?
-  - 
+  
 
 ## test cases
 

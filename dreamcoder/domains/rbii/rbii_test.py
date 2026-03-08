@@ -245,7 +245,7 @@ def run_sequence(
             pool_target_size=5,
             validation_window=10,
             min_time=min_time,
-            enum_timeout_s=1.0,
+            enum_timeout_s=15.0,
             eval_timeout_s=0.02,
             upper_bound=200.0,
             budget_increment=1.5,
@@ -408,18 +408,32 @@ def main():
 
     ## Simple predictable sequences
     # _run_sequence("all_a", "aaaaaaaaaaaaaaaaaaaa")
-    _run_sequence("alternating_ab", "abababababababababab")
-    _run_sequence("runs_of_3",
-                 "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
-                  )
-
-    ## runs of increasting length
-    _run_sequence("runs_of_increasing",
-                 "aaabbbcccdddeee"
-                      "aaaabbbbccccddddeeee"
-                      "aaaaabbbbbcccccdddddeeeee"
-                      "aaaaaabbbbbbccccccddddddeeeeee",
-                 )
+    # _run_sequence("alternating_ab", "abababababababababab")
+    # Requires conditional behavior with the base RBII grammar:
+    # if last == prev:
+    #   if last == e: a
+    #   else: succ_char(last)
+    # else:
+    #   last
+    #
+    # This yields aabbccddee... cyclically. With max_int=6 there is no simple
+    # fixed-lag shortcut for the full 10-symbol period, so it is a cleaner
+    # conditional stress case than the ad hoc "force_if" sketch below.
+    _run_sequence(
+        "pairs_cycle_requires_if",
+        "aabbccddee" * 6,
+    )
+    # _run_sequence("runs_of_3",
+    #              "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
+    #               )
+    #
+    # ## runs of increasting length
+    # _run_sequence("runs_of_increasing",
+    #              "aaabbbcccdddeee"
+    #                   "aaaabbbbccccddddeeee"
+    #                   "aaaaabbbbbcccccdddddeeeee"
+    #                   "aaaaaabbbbbbccccccddddddeeeeee",
+    #              )
 
     # sequence that forces conditional to be the best
 

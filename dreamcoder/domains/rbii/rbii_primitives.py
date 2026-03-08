@@ -165,9 +165,9 @@ def make_rbii_grammar(
     prims.append(_primitive(c, tcharacter, c))
 
 
-  # integer arithmetic
-  prims.append(_primitive("neg_int", arrow(tint, tint), _neg_int))
-  prims.append(_primitive("add_int", arrow(tint, tint, tint), _add_int))
+  # # integer arithmetic
+  # prims.append(_primitive("neg_int", arrow(tint, tint), _neg_int))
+  # prims.append(_primitive("add_int", arrow(tint, tint, tint), _add_int))
 
   # current timestep lookup
   prims.append(
