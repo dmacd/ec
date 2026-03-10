@@ -160,9 +160,9 @@ def make_rbii_grammar(
   for i in range(cfg.max_int + 1):
     prims.append(_primitive(str(i), tint, i))
 
-  # alphabet characters as constants
-  for c in alphabet:
-    prims.append(_primitive(c, tcharacter, c))
+  # # alphabet characters as constants
+  # for c in alphabet:
+  #   prims.append(_primitive(c, tcharacter, c))
 
 
   # # integer arithmetic
@@ -170,9 +170,9 @@ def make_rbii_grammar(
   # prims.append(_primitive("add_int", arrow(tint, tint, tint), _add_int))
 
   # current timestep lookup
-  prims.append(
-    _primitive("current_timestep", arrow(trbii_state, tint), _current_timestep)
-  )
+  # prims.append(
+  #   _primitive("current_timestep", arrow(trbii_state, tint), _current_timestep)
+  # )
 
   # historical observation lookup: int -> rbii_state -> char
   prims.append(
@@ -195,15 +195,15 @@ def make_rbii_grammar(
   # char logic
   prims.append(
     _primitive("eq_char", arrow(tcharacter, tcharacter, tbool), _eq_char))
-  prims.append(
-    _primitive("triple_eq", arrow(tcharacter, tcharacter, tcharacter, tbool),
-               _triple_eq))
+  # prims.append(
+  #   _primitive("triple_eq", arrow(tcharacter, tcharacter, tcharacter, tbool),
+  #              _triple_eq))
   prims.append(_primitive("and", arrow(tbool, tbool, tbool), _and))
   prims.append(_primitive("not", arrow(tbool, tbool), _not))
 
   # successor (for aaabbbccc... pattern)
-  prims.append(_primitive("succ_char", arrow(tcharacter, tcharacter),
-                          _succ_char(alphabet)))
+  # prims.append(_primitive("succ_char", arrow(tcharacter, tcharacter),
+  #                         _succ_char(alphabet)))
 
   # polymorphic if
   prims.append(_primitive("if", arrow(tbool, t0, t0, t0), _if))

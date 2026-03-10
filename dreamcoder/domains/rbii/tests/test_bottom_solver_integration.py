@@ -10,6 +10,39 @@ def _seed_state(seq: str):
     return s
 
 
+def _make_rbii_bottom_pcfg(alphabet: str = "ab", max_int: int = 2):
+    from dreamcoder.domains.rbii.rbii_primitives import (
+        RBIIPrimitiveConfig,
+        make_rbii_grammar,
+    )
+    from dreamcoder.domains.rbii.rbii_types import trbii_state
+    from dreamcoder.grammar import PCFG
+    from dreamcoder.type import arrow, tcharacter
+
+    grammar = make_rbii_grammar(
+        RBIIPrimitiveConfig(alphabet=alphabet, max_int=max_int, log_variable=0.0)
+    )
+    request = arrow(trbii_state, tcharacter)
+    return grammar, request, PCFG.from_grammar(grammar, request).number_rules()
+
+
+def _rbii_if_nonterminals(pcfg):
+    char_nt = int(pcfg.start_symbol)
+    bool_nt = None
+    for _lp, constructor, arguments in pcfg.productions[char_nt]:
+        if getattr(constructor, "name", None) != "if":
+            continue
+        assert len(arguments) == 3
+        bool_nt = int(arguments[0][1])
+        assert int(arguments[1][1]) == char_nt
+        assert int(arguments[2][1]) == char_nt
+        break
+
+    assert bool_nt is not None
+
+    return char_nt, bool_nt
+
+
 def test_bottom_solver_runs_on_rbii_task():
     """
     Integration test: actually executes solveForTask_bottom (compile_me=False)
@@ -54,6 +87,46 @@ def test_bottom_solver_runs_on_rbii_task():
     assert task in search_times
     assert isinstance(total, int)
     assert total > 0
+
+
+def test_bottom_quantized_enumerator_emits_eta_expanded_conditional():
+    """
+    Diagnostic: the valid eta-expanded conditional shows up in the bottom
+    enumerator under the char-valued `if` skeleton used by the RBII PCFG.
+    """
+    from dreamcoder.program import Abstraction, Application, NamedHole, Primitive
+
+    _grammar, _request, pcfg = _make_rbii_bottom_pcfg()
+    char_nt, bool_nt = _rbii_if_nonterminals(pcfg)
+
+    valid_skeleton = Abstraction(
+        Application(
+            Application(
+                Application(Primitive.GLOBALS["if"], NamedHole(bool_nt)),
+                NamedHole(char_nt),
+            ),
+            NamedHole(char_nt),
+        )
+    )
+    target = (
+        "(lambda "
+        "(if (eq_char (get_historical_obs 0 $0) a) "
+        "(get_historical_obs 1 $0) "
+        "(get_historical_obs 0 $0)))"
+    )
+
+    found_at = None
+    for index, program in enumerate(
+        pcfg.quantized_enumeration(skeletons=[valid_skeleton]),
+        start=1,
+    ):
+        if str(program) == target:
+            found_at = index
+            break
+        if index >= 15000:
+            break
+
+    assert found_at is not None
 
 
 def test_bottom_solver_parallel_smoke_or_skip():

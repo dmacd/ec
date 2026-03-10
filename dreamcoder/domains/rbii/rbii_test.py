@@ -216,11 +216,14 @@ def run_sequence(
     eprint(f"  {seq}")
     eprint("=" * 80)
 
-    alphabet = "abcde"
+    # alphabet = "abcde"
+    alphabet = "abc"
 
     # Build grammar once per run.
     g = make_rbii_grammar(
-        RBIIPrimitiveConfig(alphabet=alphabet, max_int=6, log_variable=0.0)
+        RBIIPrimitiveConfig(alphabet=alphabet,
+                            max_int=3,
+                            log_variable=0.0)
     )
 
     total_cpus = os.cpu_count() or 1
@@ -245,7 +248,7 @@ def run_sequence(
             pool_target_size=5,
             validation_window=10,
             min_time=min_time,
-            enum_timeout_s=15.0,
+            enum_timeout_s=10.0,
             eval_timeout_s=0.02,
             upper_bound=200.0,
             budget_increment=1.5,
@@ -409,20 +412,35 @@ def main():
     ## Simple predictable sequences
     # _run_sequence("all_a", "aaaaaaaaaaaaaaaaaaaa")
     # _run_sequence("alternating_ab", "abababababababababab")
+
+
     # Requires conditional behavior with the base RBII grammar:
     # if last == prev:
     #   if last == e: a
     #   else: succ_char(last)
     # else:
     #   last
-    #
+    # _run_sequence(
+    #   "cycle_requires_if",
+    #   "abcde" * 6,
+    # )
+    # TODO: could still make this work if we make (last) a single primitive?
+    #  i.e. emulate library compression
+
+    # even simpler if
+    _run_sequence(
+      "random_requires_if",
+      "aabcaaaabcabcaabcaaaaabcabcaaabcaabcaabcaaaaabcabc" * 6,
+    )
+
+
     # This yields aabbccddee... cyclically. With max_int=6 there is no simple
     # fixed-lag shortcut for the full 10-symbol period, so it is a cleaner
     # conditional stress case than the ad hoc "force_if" sketch below.
-    _run_sequence(
-        "pairs_cycle_requires_if",
-        "aabbccddee" * 6,
-    )
+    # _run_sequence(
+    #     "pairs_cycle_requires_if",
+    #     "aabbccddee" * 6,
+    # )
     # _run_sequence("runs_of_3",
     #              "aaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeeeaaabbbcccdddeee",
     #               )
