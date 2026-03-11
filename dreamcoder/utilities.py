@@ -248,6 +248,8 @@ def lse(x, y=None):
         t = type(x[0])
         if t == int or t == float:
             largest = max(*x)
+            if largest == NEGATIVEINFINITY:
+                return NEGATIVEINFINITY
             return largest + math.log(sum(math.exp(z - largest) for z in x))
         #added clause to avoid zero -dim tensor problem
         import torch
@@ -256,9 +258,9 @@ def lse(x, y=None):
         # Must be torch
         return torchSoftMax(x)
     else:
-        if x is NEGATIVEINFINITY:
+        if x == NEGATIVEINFINITY:
             return y
-        if y is NEGATIVEINFINITY:
+        if y == NEGATIVEINFINITY:
             return x
         tx = type(x)
         ty = type(y)

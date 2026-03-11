@@ -5,12 +5,15 @@
 
 import bin.binutil  # alt import if called as module
 import argparse
+import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import random
 import time
+import types
 import urllib.error
 import urllib.request
 import webbrowser
@@ -29,24 +32,146 @@ from dreamcoder.domains.rbii.rbii_loop import RBIIConfig, RBIILoop
 from dreamcoder.domains.rbii.rbii_state import RBIIState
 
 
+MIN_FREE_LOG_BYTES = 1 << 30
+LOG_SPACE_CHECK_EVERY_WRITES = 1
+ENABLE_ENUM_DEBUG_LOGS = os.environ.get("RBII_ENABLE_ENUM_DEBUG_LOGS") == "1"
+
+
+def _ensure_six_meta_path_has_find_spec() -> None:
+    for importer in sys.meta_path:
+        if type(importer).__name__ != "_SixMetaPathImporter":
+            continue
+        if hasattr(importer, "find_spec"):
+            continue
+
+        def _find_spec(self, fullname, path=None, target=None):
+            loader = self.find_module(fullname, path)
+            if loader is None:
+                return None
+            return importlib.util.spec_from_loader(fullname, loader)
+
+        importer.find_spec = types.MethodType(_find_spec, importer)
+
+
+_ensure_six_meta_path_has_find_spec()
+
+
+def _prune_old_logs_if_needed(
+    base_dir: str,
+    preserve_paths,
+    min_free_bytes: int = MIN_FREE_LOG_BYTES,
+) -> bool:
+    base_dir = os.path.abspath(base_dir)
+    preserve_paths = {os.path.abspath(path) for path in preserve_paths}
+    os.makedirs(base_dir, exist_ok=True)
+
+    def enough_space() -> bool:
+        return shutil.disk_usage(base_dir).free >= min_free_bytes
+
+    if enough_space():
+        return True
+
+    def is_preserved(path: str) -> bool:
+        return any(
+            path == preserved or path.startswith(preserved + os.sep)
+            for preserved in preserve_paths
+        )
+
+    def is_enumeration_dump(path: str) -> bool:
+        name = os.path.basename(path)
+        return name.endswith(".log") and "_enumerate_debug" in name
+
+    candidates = []
+    for root, dirnames, filenames in os.walk(base_dir):
+        root = os.path.abspath(root)
+        if is_preserved(root):
+            dirnames[:] = []
+            continue
+
+        dirnames[:] = [
+            dirname
+            for dirname in dirnames
+            if not is_preserved(os.path.abspath(os.path.join(root, dirname)))
+        ]
+
+        for filename in filenames:
+            path = os.path.abspath(os.path.join(root, filename))
+            if not is_enumeration_dump(path):
+                continue
+            try:
+                stat = os.stat(path, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            candidates.append((stat.st_mtime, -stat.st_size, path))
+
+    candidates.sort()
+    for _mtime, _neg_size, path in candidates:
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            eprint("WARNING: failed to delete old log path:", path, e)
+        if enough_space():
+            return True
+
+    return enough_space()
+
+
 class _FileEnumerationDebugHook(EnumerationDebugHook):
-    def __init__(self, log_path: str):
+    def __init__(
+        self,
+        log_path: str,
+        cleanup_root: str | None = None,
+        min_free_bytes: int = MIN_FREE_LOG_BYTES,
+        check_every_writes: int = LOG_SPACE_CHECK_EVERY_WRITES,
+    ):
         self.log_path = log_path
+        self.cleanup_root = cleanup_root or os.path.dirname(log_path)
+        self.min_free_bytes = int(min_free_bytes)
+        self.check_every_writes = max(1, int(check_every_writes))
+        self._writes_since_check = self.check_every_writes
+        self._warned_insufficient_space = False
 
     def for_worker(self, worker_id):
         root, ext = os.path.splitext(self.log_path)
-        return _FileEnumerationDebugHook(f"{root}.worker_{worker_id}{ext}")
+        return _FileEnumerationDebugHook(
+            f"{root}.worker_{worker_id}{ext}",
+            cleanup_root=self.cleanup_root,
+            min_free_bytes=self.min_free_bytes,
+            check_every_writes=self.check_every_writes,
+        )
+
+    def _write_line(self, line: str) -> None:
+        self._writes_since_check += 1
+        if self._writes_since_check >= self.check_every_writes:
+            self._writes_since_check = 0
+            if not _prune_old_logs_if_needed(
+                self.cleanup_root,
+                preserve_paths=[os.path.dirname(os.path.abspath(self.log_path))],
+                min_free_bytes=self.min_free_bytes,
+            ):
+                if not self._warned_insufficient_space:
+                    eprint(
+                        "WARNING: enumeration log writing disabled; "
+                        f"unable to keep {self.min_free_bytes} bytes free under "
+                        f"{self.cleanup_root}"
+                    )
+                    self._warned_insufficient_space = True
+                return
+
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write(line)
 
     def on_program(self, **payload):
         dt = float(payload.get("dt", 0.0))
         likelihood = payload.get("likelihood")
         program = payload.get("program")
-        with open(self.log_path, "a", encoding="utf-8") as f:
-            f.write(f"{dt:.6f}\t{likelihood}\t{program}\n")
+        self._write_line(f"{dt:.6f}\t{likelihood}\t{program}\n")
 
     def on_end(self, **_payload):
-        with open(self.log_path, "a", encoding="utf-8") as f:
-            f.write("-------\n")
+        self._write_line("-------\n")
 
 
 LIVE_VIZ_HOST = "127.0.0.1"
@@ -194,11 +319,24 @@ def _next_run_subdir(base_dir: str) -> str:
     return run_dir
 
 
-def _make_enum_debug_hook_factory(log_path: str):
+def _make_enum_debug_hook_factory(log_path: str, cleanup_root: str):
+    if not ENABLE_ENUM_DEBUG_LOGS:
+        return None
+
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    if not _prune_old_logs_if_needed(
+        cleanup_root,
+        preserve_paths=[os.path.dirname(os.path.abspath(log_path))],
+        min_free_bytes=MIN_FREE_LOG_BYTES,
+    ):
+        eprint(
+            "WARNING: enumeration debug logging disabled; "
+            f"unable to keep {MIN_FREE_LOG_BYTES} bytes free under {cleanup_root}"
+        )
+        return None
 
     def hook_factory(_current_index: int, _task):
-        return _FileEnumerationDebugHook(log_path)
+        return _FileEnumerationDebugHook(log_path, cleanup_root=cleanup_root)
 
     return hook_factory
 
@@ -239,8 +377,10 @@ def run_sequence(
     eprint(f"Warmup seeded obs_history[:{warmup}] = {''.join(state.obs_history)!r}")
 
     enum_debug_log_path = os.path.join(event_log_dir, f"{name}_enumerate_debug.log")
-    enum_debug_factory = _make_enum_debug_hook_factory(enum_debug_log_path)
-    enum_debug_factory = None # disable enumeration debug logging for now
+    enum_debug_factory = _make_enum_debug_hook_factory(
+        enum_debug_log_path,
+        cleanup_root=base_event_log_dir,
+    )
     event_log_path = None
 
     if loop_version == "v2":
@@ -248,7 +388,7 @@ def run_sequence(
             pool_target_size=5,
             validation_window=10,
             min_time=min_time,
-            enum_timeout_s=10.0,
+            enum_timeout_s=5.0,
             eval_timeout_s=0.02,
             upper_bound=200.0,
             budget_increment=1.5,

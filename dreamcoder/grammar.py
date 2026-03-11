@@ -28,12 +28,117 @@ class NoCandidates(Exception):
     pass
 
 
+def _collect_type_kinds(*types):
+    kinds = set()
+
+    def process_type(t):
+        if t.isArrow():
+            process_type(t.arguments[0])
+            process_type(t.arguments[1])
+            return
+        if isinstance(t, TypeVariable):
+            return
+        kinds.add((t.name, len(t.arguments)))
+        for a in t.arguments:
+            process_type(a)
+
+    for t in types:
+        process_type(t)
+    return kinds
+
+
+def _size_of_instantiation_type(t):
+    if isinstance(t, TypeVariable):
+        return 0
+    if t.isArrow():
+        return max(_size_of_instantiation_type(t.arguments[0]),
+                   _size_of_instantiation_type(t.arguments[1]))
+    return 1 + sum(_size_of_instantiation_type(a) for a in t.arguments)
+
+
+def _possible_instantiation_types(kinds, seed_types, maximum_type):
+    _types_of_size = {}
+
+    def types_of_size(s):
+        if s in _types_of_size:
+            return _types_of_size[s]
+
+        out = set()
+        if s <= 0:
+            _types_of_size[s] = tuple()
+            return _types_of_size[s]
+
+        if s == 1:
+            out |= {TypeConstructor(n, []) for n, a in kinds if a == 0}
+        else:
+            for n, a in kinds:
+                assert a < 3
+                if a == 0:
+                    continue
+                if a == 1:
+                    out |= {
+                        TypeConstructor(n, [t])
+                        for t in types_of_size(s - 1)
+                    }
+                if a == 2:
+                    out |= {
+                        TypeConstructor(n, [t1, t2])
+                        for s1 in range(1, s)
+                        for s2 in range(1, s - s1)
+                        if 1 + s1 + s2 == s
+                        for t1 in types_of_size(s1)
+                        for t2 in types_of_size(s2)
+                    }
+
+            if s >= 3:
+                out |= {
+                    arrow(t1, t2)
+                    for s1 in range(1, s - 1)
+                    for s2 in range(1, s - s1)
+                    if 1 + s1 + s2 == s
+                    for t1 in types_of_size(s1)
+                    for t2 in types_of_size(s2)
+                }
+
+        _types_of_size[s] = tuple(out)
+        return _types_of_size[s]
+
+    return {
+        t for s in range(1, maximum_type + 1) for t in types_of_size(s)
+    } | set(seed_types)
+
+
+def _instantiate_type_over_universe(t, possible_types, maximum_type, cache):
+    if not t.isPolymorphic:
+        return (t,)
+
+    canonical = t.canonical()
+    if canonical in cache:
+        return cache[canonical]
+
+    variables = sorted(canonical.free_type_variables())
+    instantiated_types = []
+    ordered_possible_types = tuple(sorted(possible_types, key=str))
+    for substitution in itertools.product(ordered_possible_types, repeat=len(variables)):
+        context = Context(substitution=list(zip(variables, substitution)))
+        new_type = canonical.apply(context)
+        if _size_of_instantiation_type(new_type) <= maximum_type:
+            instantiated_types.append(new_type)
+
+    cache[canonical] = tuple(sorted(set(instantiated_types), key=str))
+    return cache[canonical]
+
+
 class Grammar(object):
-    def __init__(self, logVariable, productions, continuationType=None):
+    def __init__(self, logVariable, productions, continuationType=None,
+                 pcfg_require_stateful_if_conditions=False):
         self.logVariable = logVariable
         self.productions = productions
 
         self.continuationType = continuationType
+        self.pcfg_require_stateful_if_conditions = bool(
+            pcfg_require_stateful_if_conditions
+        )
 
         self.expression2likelihood = dict((p, l) for l, _, p in productions)
         self.expression2likelihood[Index(0)] = self.logVariable
@@ -43,19 +148,25 @@ class Grammar(object):
         return Grammar(logVariable=r(self.logVariable),
                        productions=[(r(l),t,p)
                                     for l,t,p in self.productions ],
-                       continuationType=self.continuationType)
+                       continuationType=self.continuationType,
+                       pcfg_require_stateful_if_conditions=
+                       self.pcfg_require_stateful_if_conditions)
 
     def strip_primitive_values(self):
         return Grammar(logVariable=self.logVariable,
                        productions=[(l,t,strip_primitive_values(p))
                                     for l,t,p in self.productions ],
-                       continuationType=self.continuationType)
+                       continuationType=self.continuationType,
+                       pcfg_require_stateful_if_conditions=
+                       self.pcfg_require_stateful_if_conditions)
 
     def unstrip_primitive_values(self):
         return Grammar(logVariable=self.logVariable,
                        productions=[(l,t,unstrip_primitive_values(p))
                                     for l,t,p in self.productions ],
-                       continuationType=self.continuationType)
+                       continuationType=self.continuationType,
+                       pcfg_require_stateful_if_conditions=
+                       self.pcfg_require_stateful_if_conditions)
 
     def __setstate__(self, state):
         """
@@ -72,8 +183,17 @@ class Grammar(object):
                 continuationType = baseType("tower")
             else:
                 continuationType = None
+        pcfg_require_stateful_if_conditions = state.get(
+            'pcfg_require_stateful_if_conditions', False
+        )
                 
-        self.__init__(state['logVariable'], state['productions'], continuationType=continuationType)
+        self.__init__(
+            state['logVariable'],
+            state['productions'],
+            continuationType=continuationType,
+            pcfg_require_stateful_if_conditions=
+            pcfg_require_stateful_if_conditions,
+        )
 
     @staticmethod
     def fromProductions(productions, logVariable=0.0, continuationType=None):
@@ -131,12 +251,37 @@ class Grammar(object):
     def primitives(self):
         return [p for _, _, p in self.productions]
 
+    def _instantiation_kinds(self):
+        if not hasattr(self, "_instantiation_kinds_cache"):
+            seed_types = [t for _, t, _ in self.productions]
+            if self.continuationType is not None:
+                seed_types.append(self.continuationType)
+            self._instantiation_kinds_cache = _collect_type_kinds(*seed_types)
+        return self._instantiation_kinds_cache
+
+    def _candidate_instantiation_types(self, request, environment, maximum_type=3):
+        if not hasattr(self, "_candidate_instantiation_type_cache"):
+            self._candidate_instantiation_type_cache = {}
+
+        key = (request, tuple(environment), maximum_type)
+        if key not in self._candidate_instantiation_type_cache:
+            kinds = set(self._instantiation_kinds())
+            kinds |= _collect_type_kinds(request, *environment)
+            seed_types = [request, request.returns(), *environment]
+            self._candidate_instantiation_type_cache[key] = _possible_instantiation_types(
+                kinds, seed_types, maximum_type
+            )
+
+        return self._candidate_instantiation_type_cache[key]
+
     def removeProductions(self, ps):
         return Grammar(
             self.logVariable, [
                 (l, t, p) for (
                     l, t, p) in self.productions if p not in ps],
-            continuationType=self.continuationType)
+            continuationType=self.continuationType,
+            pcfg_require_stateful_if_conditions=
+            self.pcfg_require_stateful_if_conditions)
 
     def buildCandidates(self, request, context, environment,
                         # Should the log probabilities be normalized?
@@ -154,18 +299,36 @@ class Grammar(object):
         if returnProbabilities:
             assert normalize
 
+        request = request.apply(context)
+        environment = [t.apply(context) for t in environment]
+        instantiation_cache = {}
+        possible_types = None
+
+        def candidate_types(t):
+            nonlocal possible_types
+            t = t.apply(context)
+            if not t.isPolymorphic:
+                return (t,)
+            if possible_types is None:
+                possible_types = self._candidate_instantiation_types(
+                    request, environment, maximum_type=3
+                )
+            return _instantiate_type_over_universe(
+                t, possible_types, maximum_type=3, cache=instantiation_cache
+            )
+
         candidates = []
         variableCandidates = []
         for l, t, p in self.productions:
-            try:
-                newContext, t = t.instantiate(context)
-                newContext = newContext.unify(t.returns(), request)
-                t = t.apply(newContext)
-                if mustBeLeaf and t.isArrow():
+            for candidateType in candidate_types(t):
+                try:
+                    newContext = context.unify(candidateType.returns(), request)
+                    candidateType = candidateType.apply(newContext)
+                    if mustBeLeaf and candidateType.isArrow():
+                        continue
+                    candidates.append((l, candidateType, p, newContext))
+                except UnificationFailure:
                     continue
-                candidates.append((l, t, p, newContext))
-            except UnificationFailure:
-                continue
         for j, t in enumerate(environment):
             try:
                 newContext = context.unify(t.returns(), request)
@@ -265,57 +428,92 @@ class Grammar(object):
         # Build the candidates
         candidates = self.buildCandidates(request, context, environment,
                                           normalize=False,
-                                          returnTable=True)
+                                          returnTable=False)
+
+        candidatesByPrimitive = defaultdict(list)
+        for l, tp, primitive, newContext in candidates:
+            candidatesByPrimitive[primitive].append((l, tp, newContext))
 
         # A list of everything that would have been possible to use here
-        possibles = [p for p in candidates.keys() if not p.isIndex]
-        numberOfVariables = sum(p.isIndex for p in candidates.keys())
+        candidatePrimitives = list(candidatesByPrimitive.keys())
+        possibles = [p for p in candidatePrimitives if not p.isIndex]
+        numberOfVariables = sum(p.isIndex for p in candidatePrimitives)
         if numberOfVariables > 0:
             possibles += [Index(0)]
 
-        f, xs = expression.applicationParse()
+        def decompose_application(expression, arity):
+            xs = []
+            head = expression
+            for _ in range(arity):
+                if not (isinstance(head, Program) and head.isApplication):
+                    return None, None
+                xs.append(head.x)
+                head = head.f
+            xs.reverse()
+            return head, xs
 
-        if f not in candidates:
-            if self.continuationType is not None and f.isIndex:
+        def match_candidates():
+            for primitive, variants in candidatesByPrimitive.items():
+                for _l, tp, newContext in variants:
+                    argumentTypes = tp.functionArguments()
+                    if len(argumentTypes) == 0:
+                        if expression == primitive:
+                            yield primitive, tp, newContext, []
+                        continue
+                    head, xs = decompose_application(expression, len(argumentTypes))
+                    if head == primitive and xs is not None:
+                        yield primitive, tp, newContext, xs
+
+        matchedCandidates = list(match_candidates())
+
+        if not matchedCandidates:
+            head, _xs = expression.applicationParse()
+            if self.continuationType is not None and head.isIndex:
                 ls = LikelihoodSummary()
                 ls.constant = NEGATIVEINFINITY
-                return ls
+                return context, ls
             
             if not silent:
-                eprint(f, "Not in candidates")
-                eprint("Candidates is", candidates)
+                eprint(expression, "Not in candidates")
+                eprint("Candidates is", candidatesByPrimitive)
                 #eprint("grammar:", grammar.productions)
                 eprint("request is", request)
-                eprint("xs", xs)
+                eprint("xs", _xs)
                 eprint("environment", environment)
-                assert False
             return context, None
 
-        thisSummary = LikelihoodSummary()
-        thisSummary.record(f, possibles,
-                           constant= -math.log(numberOfVariables) if f.isIndex else 0)
+        for primitive, tp, matchedContext, xs in matchedCandidates:
+            thisSummary = LikelihoodSummary()
+            thisSummary.record(
+                primitive,
+                possibles,
+                constant=-math.log(numberOfVariables) if primitive.isIndex else 0,
+            )
 
-        _, tp, context = candidates[f]
-        argumentTypes = tp.functionArguments()
-        if len(xs) != len(argumentTypes):
-            eprint("PANIC: not enough arguments for the type")
-            eprint("request", request)
-            eprint("tp", tp)
-            eprint("expression", expression)
-            eprint("xs", xs)
-            eprint("argumentTypes", argumentTypes)
-            # This should absolutely never occur
-            raise GrammarFailure((context, environment, request, expression))
+            currentContext = matchedContext
+            success = True
+            for argumentType, argument in zip(tp.functionArguments(), xs):
+                argumentType = argumentType.apply(currentContext)
+                try:
+                    currentContext, newSummary = self.likelihoodSummary(
+                        currentContext,
+                        environment,
+                        argumentType,
+                        argument,
+                        silent=silent,
+                    )
+                except GrammarFailure:
+                    success = False
+                    break
+                if newSummary is None:
+                    success = False
+                    break
+                thisSummary.join(newSummary)
 
-        for argumentType, argument in zip(argumentTypes, xs):
-            argumentType = argumentType.apply(context)
-            context, newSummary = self.likelihoodSummary(
-                context, environment, argumentType, argument, silent=silent)
-            if newSummary is None:
-                return context, None
-            thisSummary.join(newSummary)
+            if success:
+                return currentContext, thisSummary
 
-        return context, thisSummary
+        return context, None
 
     def bestFirstEnumeration(self, request):
         from heapq import heappush, heappop
@@ -354,15 +552,15 @@ class Grammar(object):
                                                   environment,
                                                   normalize=True,
                                                   returnProbabilities=False,
-                                                  returnTable=True)
+                                                  returnTable=False)
                 choices(parentCost,
-                        [(-f_ll_tp_newContext[1][0],
-                          lambda: ga(parentCost - f_ll_tp_newContext[1][0],
-                                     f_ll_tp_newContext[0],
-                                     f_ll_tp_newContext[1][1].functionArguments(),
-                                     context=f_ll_tp_newContext[1][2],
+                        [(-candidate[0],
+                          lambda candidate=candidate: ga(parentCost - candidate[0],
+                                     candidate[2],
+                                     candidate[1].functionArguments(),
+                                     context=candidate[3],
                                      environment=environment,
-                                     k=k)) for f_ll_tp_newContext in iter(candidates.items())])
+                                     k=k)) for candidate in candidates])
 
         def ga(costSoFar, f, argumentTypes, _=None,
                context=None, environment=None,
@@ -391,7 +589,7 @@ class Grammar(object):
             else:
                 action()
 
-    def closedLikelihoodSummary(self, request, expression, silent=False):
+    def closedLikelihoodSummary(self, request, expression, silent=True):
         try:
             context, summary = self.likelihoodSummary(Context.EMPTY, [], request, expression, silent=silent)
         except GrammarFailure as e:
@@ -405,7 +603,7 @@ class Grammar(object):
         return summary
 
     def logLikelihood(self, request, expression):
-        summary = self.closedLikelihoodSummary(request, expression)
+        summary = self.closedLikelihoodSummary(request, expression, silent=True)
         if summary is None:
             eprint(
                 "FATAL: program [ %s ] does not have a likelihood summary." %
@@ -459,7 +657,9 @@ class Grammar(object):
                            math.log(u.possibleUses.get(p,0.) + pseudoCounts),
                            t,p)
                           for _,t,p in g.productions ],
-                        continuationType=self.continuationType)
+                        continuationType=self.continuationType,
+                        pcfg_require_stateful_if_conditions=
+                        self.pcfg_require_stateful_if_conditions)
             if i < iterations - 1:
                 frontiers = [Frontier([ FrontierEntry((summary, uses),
                                                       logPrior=summary.logLikelihood(g),
@@ -751,7 +951,9 @@ class Grammar(object):
         return Grammar(self.logVariable.data.tolist()[0], 
                        [ (l.data.tolist()[0], t, p)
                          for l, t, p in self.productions],
-                       continuationType=self.continuationType)
+                       continuationType=self.continuationType,
+                       pcfg_require_stateful_if_conditions=
+                       self.pcfg_require_stateful_if_conditions)
 
 class LikelihoodSummary(object):
     '''Summarizes the terms that will be used in a likelihood calculation'''
@@ -1020,34 +1222,65 @@ class ContextualGrammar:
         elif parent.isIndex: g = self.variableParent
         else: g = self.library[parent][parentIndex]            
         candidates = g.buildCandidates(request, context, environment,
-                                       normalize=False, returnTable=True)
+                                       normalize=False, returnTable=False)
+        candidatesByPrimitive = defaultdict(list)
+        for l, tp, primitive, newContext in candidates:
+            candidatesByPrimitive[primitive].append((l, tp, newContext))
 
         # A list of everything that would have been possible to use here
-        possibles = [p for p in candidates.keys() if not p.isIndex]
-        numberOfVariables = sum(p.isIndex for p in candidates.keys())
+        candidatePrimitives = list(candidatesByPrimitive.keys())
+        possibles = [p for p in candidatePrimitives if not p.isIndex]
+        numberOfVariables = sum(p.isIndex for p in candidatePrimitives)
         if numberOfVariables > 0:
             possibles += [Index(0)]
 
-        f, xs = expression.applicationParse()
+        def decompose_application(expression, arity):
+            xs = []
+            head = expression
+            for _ in range(arity):
+                if not (isinstance(head, Program) and head.isApplication):
+                    return None, None
+                xs.append(head.x)
+                head = head.f
+            xs.reverse()
+            return head, xs
 
-        assert f in candidates
+        matchedCandidates = []
+        for primitive, variants in candidatesByPrimitive.items():
+            for _l, tp, newContext in variants:
+                argumentTypes = tp.functionArguments()
+                if len(argumentTypes) == 0:
+                    if expression == primitive:
+                        matchedCandidates.append((primitive, tp, newContext, []))
+                    continue
+                head, xs = decompose_application(expression, len(argumentTypes))
+                if head == primitive and xs is not None:
+                    matchedCandidates.append((primitive, tp, newContext, xs))
 
-        thisSummary = self.LS(self)
-        thisSummary.record(parent, parentIndex,
-                           f, possibles,
-                           constant= -math.log(numberOfVariables) if f.isIndex else 0)
+        if not matchedCandidates:
+            return context, None
 
-        _, tp, context = candidates[f]
-        argumentTypes = tp.functionArguments()
-        assert len(xs) == len(argumentTypes)
+        for primitive, tp, matchedContext, xs in matchedCandidates:
+            thisSummary = self.LS(self)
+            thisSummary.record(parent, parentIndex,
+                               primitive, possibles,
+                               constant= -math.log(numberOfVariables) if primitive.isIndex else 0)
 
-        for i, (argumentType, argument) in enumerate(zip(argumentTypes, xs)):
-            argumentType = argumentType.apply(context)
-            context, newSummary = self.likelihoodSummary(f, i,
-                                                         context, environment, argumentType, argument)
-            thisSummary.join(newSummary)
+            currentContext = matchedContext
+            success = True
+            for i, (argumentType, argument) in enumerate(zip(tp.functionArguments(), xs)):
+                argumentType = argumentType.apply(currentContext)
+                currentContext, newSummary = self.likelihoodSummary(primitive, i,
+                                                                    currentContext, environment, argumentType, argument)
+                if newSummary is None:
+                    success = False
+                    break
+                thisSummary.join(newSummary)
 
-        return context, thisSummary
+            if success:
+                return currentContext, thisSummary
+
+        return context, None
 
     def closedLikelihoodSummary(self, request, expression):
         return self.likelihoodSummary(None,None,
@@ -1317,7 +1550,16 @@ class PCFG():
 
     @staticmethod
     def from_grammar(g, request, maximum_type=3, maximum_environment=2):
+        if getattr(g, "pcfg_require_stateful_if_conditions", False):
+            return PCFG._from_grammar_with_stateful_if_conditions(
+                g,
+                request,
+                maximum_type=maximum_type,
+                maximum_environment=maximum_environment,
+            )
+
         kinds = set()
+        original_request = request
 
         def process_type(t):
             if t.isArrow():
@@ -1335,22 +1577,50 @@ class PCFG():
             process_type(t)
 
 
+        _types_of_size = {}
         def types_of_size(s):
-            if s<=1:
-                yield from { TypeConstructor(n, []) for n, a in kinds if a==0 }
-                return 
+            if s in _types_of_size:
+                return _types_of_size[s]
 
-            for n, a in kinds:
-                assert a<3
-                if a==0: continue
-                if a==1:
-                    yield from { TypeConstructor(n, [t]) for t in types_of_size(s-1) }
-                if a==2:
-                    yield from { TypeConstructor(n, [t1, t2])
-                             for s1 in  range(1, s)
-                             for s2 in  range(1, s-s1)
-                             for t1 in types_of_size(s1)
-                             for t2 in types_of_size(s2) }
+            out = set()
+            if s <= 0:
+                _types_of_size[s] = tuple()
+                return _types_of_size[s]
+
+            if s == 1:
+                out |= {TypeConstructor(n, []) for n, a in kinds if a == 0}
+            else:
+                for n, a in kinds:
+                    assert a < 3
+                    if a == 0:
+                        continue
+                    if a == 1:
+                        out |= {
+                            TypeConstructor(n, [t])
+                            for t in types_of_size(s - 1)
+                        }
+                    if a == 2:
+                        out |= {
+                            TypeConstructor(n, [t1, t2])
+                            for s1 in range(1, s)
+                            for s2 in range(1, s - s1)
+                            if 1 + s1 + s2 == s
+                            for t1 in types_of_size(s1)
+                            for t2 in types_of_size(s2)
+                        }
+
+                if s >= 3:
+                    out |= {
+                        arrow(t1, t2)
+                        for s1 in range(1, s - 1)
+                        for s2 in range(1, s - s1)
+                        if 1 + s1 + s2 == s
+                        for t1 in types_of_size(s1)
+                        for t2 in types_of_size(s2)
+                    }
+
+            _types_of_size[s] = tuple(out)
+            return _types_of_size[s]
 
         def size_of_type(t):
             if isinstance(t, TypeVariable):
@@ -1363,7 +1633,16 @@ class PCFG():
         environment = tuple(reversed(request.functionArguments()))
         maximum_environment += len(environment)
         request = request.returns()
-        possible_types = {t for s in range(1, maximum_type+1) for t in types_of_size(s)}|{request}
+        possible_types = tuple(
+            sorted(
+                {
+                    t for s in range(1, maximum_type + 1) for t in types_of_size(s)
+                }
+                | {request, original_request}
+                | set(environment),
+                key=str,
+            )
+        )
 
         _instantiations = {}
         def instantiations(t):
@@ -1382,8 +1661,8 @@ class PCFG():
                 new_type = t.apply(context)
                 if size_of_type(new_type) <= maximum_type:
                     return_value.append(new_type)
-            _instantiations[t] = return_value
-            return return_value
+            _instantiations[t] = tuple(sorted(set(return_value), key=str))
+            return _instantiations[t]
 
         # for _, t, p in g.productions:
         #     print(p, t)
@@ -1443,6 +1722,250 @@ class PCFG():
         make_rules(*start_symbol)
         # eprint(len(rules), "nonterminal symbols")
         # eprint(sum(len(productions) for productions in rules.values()), "production rules")
+        return PCFG(rules, start_symbol, len(start_environment)).normalize()
+
+    @staticmethod
+    def _from_grammar_with_stateful_if_conditions(
+        g, request, maximum_type=3, maximum_environment=2
+    ):
+        kinds = set()
+        original_request = request
+
+        def process_type(t):
+            if t.isArrow():
+                process_type(t.arguments[0])
+                process_type(t.arguments[1])
+            elif isinstance(t, TypeVariable):
+                return
+            else:
+                kinds.add((t.name, len(t.arguments)))
+                for a in t.arguments:
+                    process_type(a)
+
+        process_type(request)
+        for _, t, _ in g.productions:
+            process_type(t)
+
+        _types_of_size = {}
+
+        def types_of_size(s):
+            if s in _types_of_size:
+                return _types_of_size[s]
+
+            out = set()
+            if s <= 0:
+                _types_of_size[s] = tuple()
+                return _types_of_size[s]
+
+            if s == 1:
+                out |= {TypeConstructor(n, []) for n, a in kinds if a == 0}
+            else:
+                for n, a in kinds:
+                    assert a < 3
+                    if a == 0:
+                        continue
+                    if a == 1:
+                        out |= {
+                            TypeConstructor(n, [t])
+                            for t in types_of_size(s - 1)
+                        }
+                    if a == 2:
+                        out |= {
+                            TypeConstructor(n, [t1, t2])
+                            for s1 in range(1, s)
+                            for s2 in range(1, s - s1)
+                            if 1 + s1 + s2 == s
+                            for t1 in types_of_size(s1)
+                            for t2 in types_of_size(s2)
+                        }
+
+                if s >= 3:
+                    out |= {
+                        arrow(t1, t2)
+                        for s1 in range(1, s - 1)
+                        for s2 in range(1, s - s1)
+                        if 1 + s1 + s2 == s
+                        for t1 in types_of_size(s1)
+                        for t2 in types_of_size(s2)
+                    }
+
+            _types_of_size[s] = tuple(out)
+            return _types_of_size[s]
+
+        def size_of_type(t):
+            if isinstance(t, TypeVariable):
+                return 0
+            if t.isArrow():
+                return max(size_of_type(t.arguments[0]),
+                           size_of_type(t.arguments[1]))
+            return 1 + sum(size_of_type(a) for a in t.arguments)
+
+        initial_environment_types = tuple(reversed(request.functionArguments()))
+        maximum_environment += len(initial_environment_types)
+        request = request.returns()
+        possible_types = tuple(
+            sorted(
+                {
+                    t for s in range(1, maximum_type + 1) for t in types_of_size(s)
+                }
+                | {request, original_request}
+                | set(initial_environment_types),
+                key=str,
+            )
+        )
+
+        _instantiations = {}
+
+        def instantiations(t):
+            if not t.isPolymorphic:
+                return [t]
+
+            if t in _instantiations:
+                return _instantiations[t]
+
+            t = t.canonical()
+            variables = t.free_type_variables()
+
+            return_value = []
+            for substitution in itertools.product(possible_types, repeat=len(variables)):
+                context = Context(
+                    substitution=list(zip(range(len(variables)), substitution))
+                )
+                new_type = t.apply(context)
+                if size_of_type(new_type) <= maximum_type:
+                    return_value.append(new_type)
+            _instantiations[t] = tuple(sorted(set(return_value), key=str))
+            return _instantiations[t]
+
+        def push_environment(entry, environment):
+            if len(environment) == 0:
+                return (entry,)
+            return tuple([entry] + list(environment))
+
+        def push_multiple_environment(ts, environment, is_tracked):
+            for t in ts:
+                environment = push_environment((t, is_tracked), environment)
+            return environment
+
+        def enumerate_argument_statefulness(
+            primitive, argument_requests, constructor_stateful, target_stateful
+        ):
+            arity = len(argument_requests)
+            if arity == 0:
+                if constructor_stateful == target_stateful:
+                    yield ()
+                return
+
+            for child_states in itertools.product([False, True], repeat=arity):
+                if getattr(primitive, "name", None) == "if":
+                    if not child_states[0]:
+                        continue
+
+                actual_stateful = constructor_stateful or any(child_states)
+                if actual_stateful != target_stateful:
+                    continue
+                yield child_states
+
+        rules = {}
+
+        def make_rules(request, environment, target_stateful):
+            key = (request, environment, target_stateful)
+            if key in rules:
+                return
+
+            if target_stateful is None:
+                make_rules(request, environment, False)
+                make_rules(request, environment, True)
+                rules[key] = list(rules[(request, environment, False)]) + list(
+                    rules[(request, environment, True)]
+                )
+                return
+
+            rules[key] = []
+            variable_candidates = [
+                (g.logVariable, tp, Index(i), depends_on_state)
+                for i, (t, depends_on_state) in enumerate(environment)
+                for tp in instantiations(t)
+                if tp.returns() == request
+            ]
+            if g.continuationType == request and variable_candidates:
+                variable_candidates = [
+                    min(variable_candidates, key=lambda vc: vc[2].i)
+                ]
+            variable_candidates = [
+                (lp - math.log(len(variable_candidates)), t, p, depends_on_state)
+                for lp, t, p, depends_on_state in variable_candidates
+            ]
+
+            for lp, t, p, constructor_stateful in (
+                [(lp, t, p, False) for lp, t, p in g.productions] + variable_candidates
+            ):
+                for instantiated_type in instantiations(t):
+                    if instantiated_type.returns() != request:
+                        continue
+
+                    argument_requests = instantiated_type.functionArguments()
+                    argument_shapes = []
+                    for argument_request in argument_requests:
+                        child_environment = push_multiple_environment(
+                            argument_request.functionArguments(),
+                            environment,
+                            is_tracked=False,
+                        )
+                        argument_shapes.append(
+                            (
+                                len(argument_request.functionArguments()),
+                                argument_request.returns(),
+                                child_environment,
+                            )
+                        )
+
+                    if any(
+                        len(child_environment) > maximum_environment
+                        for _, _, child_environment in argument_shapes
+                    ):
+                        continue
+
+                    for child_states in enumerate_argument_statefulness(
+                        p, argument_requests, constructor_stateful, target_stateful
+                    ):
+                        argument_symbols = [
+                            (
+                                nl,
+                                (child_request, child_environment, child_stateful),
+                            )
+                            for child_stateful, (nl, child_request, child_environment) in zip(
+                                child_states, argument_shapes
+                            )
+                        ]
+                        rules[key].append((lp, p, argument_symbols))
+
+            for _, _p, argument_symbols in rules[key]:
+                for _, symbol in argument_symbols:
+                    make_rules(*symbol)
+
+        start_environment = push_multiple_environment(
+            initial_environment_types, (), is_tracked=True
+        )
+        start_symbol = (request, start_environment, None)
+        make_rules(*start_symbol)
+        changed = True
+        while changed:
+            changed = False
+            for key, distribution in list(rules.items()):
+                filtered = [
+                    (lp, p, argument_symbols)
+                    for lp, p, argument_symbols in distribution
+                    if all(
+                        child_symbol in rules and len(rules[child_symbol]) > 0
+                        for _, child_symbol in argument_symbols
+                    )
+                ]
+                if len(filtered) != len(distribution):
+                    rules[key] = filtered
+                    changed = True
+
+        rules = {k: v for k, v in rules.items() if v}
         return PCFG(rules, start_symbol, len(start_environment)).normalize()
 
     def normalize(self):
@@ -1517,15 +2040,40 @@ class PCFG():
 
         rules = self.productions[symbol]
 
-        
-        f, xs = program.applicationParse()
+        def decompose_application(expression, arity):
+            xs = []
+            head = expression
+            for _ in range(arity):
+                if not (isinstance(head, Program) and head.isApplication):
+                    return None, None
+                xs.append(head.x)
+                head = head.f
+            xs.reverse()
+            return head, xs
 
-        lp = float("-inf")
+        lp = NEGATIVEINFINITY
         for p, k, arguments in rules:
-            if f==k:
-                _lp=p+sum(self.log_probability(a, at)
-                           for a, (_, at) in zip(xs, arguments) )
-                lp = lse(lp, _lp)
+            if len(arguments) == 0:
+                if program != k:
+                    continue
+                _lp = p
+            else:
+                f, xs = decompose_application(program, len(arguments))
+                if f != k or xs is None:
+                    continue
+
+                child_lps = []
+                impossible = False
+                for a, (_, at) in zip(xs, arguments):
+                    child_lp = self.log_probability(a, at)
+                    if child_lp == NEGATIVEINFINITY or math.isnan(child_lp):
+                        impossible = True
+                        break
+                    child_lps.append(child_lp)
+                if impossible:
+                    continue
+                _lp = p + sum(child_lps)
+            lp = lse(lp, _lp)
         return lp
 
     def best_first_enumeration(self, partial=False):
@@ -1652,9 +2200,53 @@ class PCFG():
                        for right_hand_sides in self.productions]
         
         nonterminals = len(productions)
+        maximum_cost = int(100/resolution)
 
-        expressions = [ [None for _ in range(int(100/resolution))]
+        minimum_costs = [float("inf") for _ in range(nonterminals)]
+        changed = True
+        while changed:
+            changed = False
+            for symbol, rules in enumerate(productions):
+                best = minimum_costs[symbol]
+                for cost, _k, arguments in rules:
+                    child_cost = 0
+                    reachable = True
+                    for _, at in arguments:
+                        if minimum_costs[at] == float("inf"):
+                            reachable = False
+                            break
+                        child_cost += minimum_costs[at]
+                    if reachable:
+                        best = min(best, cost + child_cost)
+                if best < minimum_costs[symbol]:
+                    minimum_costs[symbol] = best
+                    changed = True
+
+        expressions = [ [None for _ in range(maximum_cost)]
                         for _ in range(nonterminals) ]
+
+        minimum_skeleton_costs = {}
+
+        def minimum_skeleton_cost(skeleton):
+            if skeleton in minimum_skeleton_costs:
+                return minimum_skeleton_costs[skeleton]
+
+            if skeleton.isAbstraction:
+                cost = minimum_skeleton_cost(skeleton.body)
+            elif skeleton.isApplication:
+                cost = (
+                    minimum_skeleton_cost(skeleton.f)
+                    + minimum_skeleton_cost(skeleton.x)
+                )
+            elif skeleton.isNamedHole:
+                cost = minimum_costs[skeleton.name]
+            else:
+                cost = 0
+
+            minimum_skeleton_costs[skeleton] = cost
+            return cost
+
+        skeleton_minimum_costs = [minimum_skeleton_cost(s) for s in skeletons]
 
         def expressions_of_size(symbol, size):
             nonlocal expressions
@@ -1662,92 +2254,73 @@ class PCFG():
             
             if size <= 0:
                 return []
+            if size >= maximum_cost:
+                return []
+            if minimum_costs[symbol] == float("inf") or size < minimum_costs[symbol]:
+                return []
             
             if expressions[symbol][size] is None:
                 new=[]
                 for cost, k, arguments in productions[symbol]:
                     if cost>size: continue
-                    
+                    remaining_budget = size - cost
+
                     if len(arguments) == 0:
                         if cost==size:
                             new.append(k)
-                    elif len(arguments) == 1:
-                        nl1, at1 = arguments[0]
-                        for a1 in expressions_of_size(at1, size-cost):
-                            a1 = a1.wrap_in_abstractions(nl1)
-                            new.append(Application(k, a1))
-                    elif len(arguments) == 2:
-                        nl1, at1 = arguments[0]
-                        nl2, at2 = arguments[1]
-                        for c1 in range(size-cost):
-                            for a1 in expressions_of_size(at1, c1):
-                                a1 = a1.wrap_in_abstractions(nl1)
-                                for a2 in expressions_of_size(at2, size-cost-c1):
-                                    a2 = a2.wrap_in_abstractions(nl2)
-                                    new.append(Application(Application(k, a1), a2))
-                    elif len(arguments) == 3:
-                        nl1, at1 = arguments[0]
-                        nl2, at2 = arguments[1]
-                        nl3, at3 = arguments[2]
-                        for c1 in range(size-cost):
-                            for a1 in expressions_of_size(at1, c1):
-                                a1 = a1.wrap_in_abstractions(nl1)
-                                for c2 in range(size-cost-c1):
-                                    for a2 in expressions_of_size(at2, c2):
-                                        a2 = a2.wrap_in_abstractions(nl2)
-                                        for a3 in expressions_of_size(at3, size-cost-c1-c2):
-                                            a3 = a3.wrap_in_abstractions(nl3)
-                                            new.append(Application(Application(Application(k, a1), a2), a3))
-                    elif len(arguments) == 4:
-                        nl1, at1 = arguments[0]
-                        nl2, at2 = arguments[1]
-                        nl3, at3 = arguments[2]
-                        nl4, at4 = arguments[3]
-                        for c1 in range(size-cost):
-                            for a1 in expressions_of_size(at1, c1):
-                                a1 = a1.wrap_in_abstractions(nl1)
-                                for c2 in range(size-cost-c1):
-                                    for a2 in expressions_of_size(at2, c2):
-                                        a2 = a2.wrap_in_abstractions(nl2)
-                                        for c3 in range(size-cost-c1-c2):
-                                            for a3 in expressions_of_size(at3, c3):
-                                                a3 = a3.wrap_in_abstractions(nl3)
-                                                for a4 in expressions_of_size(at3, size-cost-c1-c2-c3):
-                                                    a4 = a4.wrap_in_abstractions(nl4)
-                                                    new.append(Application(Application(Application(Application(k, a1), a2), a3), a4))
-                    elif len(arguments) == 5:
-                        nl1, at1 = arguments[0]
-                        nl2, at2 = arguments[1]
-                        nl3, at3 = arguments[2]
-                        nl4, at4 = arguments[3]
-                        nl5, at5 = arguments[4]
-                        for c1 in range(size-cost):
-                            for a1 in expressions_of_size(at1, c1):
-                                a1 = a1.wrap_in_abstractions(nl1)
-                                for c2 in range(size-cost-c1):
-                                    for a2 in expressions_of_size(at2, c2):
-                                        a2 = a2.wrap_in_abstractions(nl2)
-                                        for c3 in range(size-cost-c1-c2):
-                                            for a3 in expressions_of_size(at3, c3):
-                                                a3 = a3.wrap_in_abstractions(nl3)
-                                                for c4 in range(size-cost-c1-c2-c3):
-                                                    for a4 in expressions_of_size(at3, c4):
-                                                        a4 = a4.wrap_in_abstractions(nl4)
-                                                        for a5 in expressions_of_size(at3, size-cost-c1-c2-c3-c4):
-                                                            a5 = a4.wrap_in_abstractions(nl5)
-                                                            new.append(Application(Application(Application(Application(Application(k, a1), a2), a3), a4), a5))
                     else:
-                        assert False, "more than five arguments not supported for the enumeration algorithm but that is not for any good reason"
+                        minimum_argument_costs = [minimum_costs[at] for _, at in arguments]
+                        if any(mc == float("inf") for mc in minimum_argument_costs):
+                            continue
+                        if sum(minimum_argument_costs) > remaining_budget:
+                            continue
+
+                        suffix_minimum_costs = [0 for _ in range(len(arguments) + 1)]
+                        for j in range(len(arguments) - 1, -1, -1):
+                            suffix_minimum_costs[j] = (
+                                suffix_minimum_costs[j + 1]
+                                + minimum_argument_costs[j]
+                            )
+
+                        def argument_lists(argument_index, budget):
+                            if argument_index == len(arguments):
+                                if budget == 0:
+                                    yield ()
+                                return
+
+                            nl, at = arguments[argument_index]
+                            min_cost = minimum_argument_costs[argument_index]
+                            max_cost = budget - suffix_minimum_costs[argument_index + 1]
+                            for child_cost in range(min_cost, max_cost + 1):
+                                for child in expressions_of_size(at, child_cost):
+                                    child = child.wrap_in_abstractions(nl)
+                                    for rest in argument_lists(argument_index + 1,
+                                                               budget - child_cost):
+                                        yield (child,) + rest
+
+                        for argument_values in argument_lists(0, remaining_budget):
+                            expression = k
+                            for argument in argument_values:
+                                expression = Application(expression, argument)
+                            new.append(expression)
                 expressions[symbol][size] = new
                 
             return expressions[symbol][size]
 
         def complete_skeleton(cost, skeleton):
+            if cost < 0:
+                return
+            minimum_cost = minimum_skeleton_cost(skeleton)
+            if minimum_cost == float("inf") or cost < minimum_cost:
+                return
             if skeleton.isAbstraction:
                 for b in complete_skeleton(cost, skeleton.body):
                     yield Abstraction(b)
             elif skeleton.isApplication:
-                for function_cost in range(cost+1):
+                minimum_function_cost = minimum_skeleton_cost(skeleton.f)
+                minimum_argument_cost = minimum_skeleton_cost(skeleton.x)
+                for function_cost in range(minimum_function_cost,
+                                           cost - minimum_argument_cost + 1):
                     for f in complete_skeleton(function_cost, skeleton.f):
                         for x in complete_skeleton(cost-function_cost, skeleton.x):
                             yield Application(f, x)
@@ -1757,14 +2330,17 @@ class PCFG():
                 if cost==0:
                     yield skeleton
 
+
                     
         
-
-        expressions = [ [None for _ in range(int(100/resolution))]
-                        for _ in range(nonterminals) ]
-        for cost in range(int(100/resolution)):
-            for skeleton, skeleton_cost in zip(skeletons, skeleton_costs):
-                for e in complete_skeleton(cost-skeleton_cost, skeleton):                    
+        for cost in range(maximum_cost):
+            for skeleton, skeleton_cost, skeleton_minimum_cost in zip(
+                skeletons, skeleton_costs, skeleton_minimum_costs
+            ):
+                budget = cost - skeleton_cost
+                if budget < skeleton_minimum_cost:
+                    continue
+                for e in complete_skeleton(budget, skeleton):                    
                     yield e
 
         

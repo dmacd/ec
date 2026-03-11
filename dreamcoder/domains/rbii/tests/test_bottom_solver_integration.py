@@ -23,24 +23,28 @@ def _make_rbii_bottom_pcfg(alphabet: str = "ab", max_int: int = 2):
         RBIIPrimitiveConfig(alphabet=alphabet, max_int=max_int, log_variable=0.0)
     )
     request = arrow(trbii_state, tcharacter)
-    return grammar, request, PCFG.from_grammar(grammar, request).number_rules()
+    raw_pcfg = PCFG.from_grammar(grammar, request)
+    return grammar, request, raw_pcfg, raw_pcfg.number_rules()
 
 
-def _rbii_if_nonterminals(pcfg):
-    char_nt = int(pcfg.start_symbol)
-    bool_nt = None
-    for _lp, constructor, arguments in pcfg.productions[char_nt]:
+def _rbii_if_nonterminals(raw_pcfg):
+    mapping = dict(zip(raw_pcfg.productions.keys(), range(len(raw_pcfg.productions))))
+    start_symbol = raw_pcfg.start_symbol
+    for _lp, constructor, arguments in raw_pcfg.productions[start_symbol]:
         if getattr(constructor, "name", None) != "if":
             continue
-        assert len(arguments) == 3
-        bool_nt = int(arguments[0][1])
-        assert int(arguments[1][1]) == char_nt
-        assert int(arguments[2][1]) == char_nt
-        break
+        if len(arguments) != 3:
+            continue
+        if arguments[1][1][-1] is not True or arguments[2][1][-1] is not True:
+            continue
+        return (
+            mapping[start_symbol],
+            mapping[arguments[0][1]],
+            mapping[arguments[1][1]],
+            mapping[arguments[2][1]],
+        )
 
-    assert bool_nt is not None
-
-    return char_nt, bool_nt
+    assert False, "expected a stateful char-valued if rule"
 
 
 def test_bottom_solver_runs_on_rbii_task():
@@ -92,25 +96,34 @@ def test_bottom_solver_runs_on_rbii_task():
 def test_bottom_quantized_enumerator_emits_eta_expanded_conditional():
     """
     Diagnostic: the valid eta-expanded conditional shows up in the bottom
-    enumerator under the char-valued `if` skeleton used by the RBII PCFG.
+    enumerator under a stateful `if (not (eq_char ...))` skeleton.
     """
     from dreamcoder.program import Abstraction, Application, NamedHole, Primitive
 
-    _grammar, _request, pcfg = _make_rbii_bottom_pcfg()
-    char_nt, bool_nt = _rbii_if_nonterminals(pcfg)
+    _grammar, _request, raw_pcfg, pcfg = _make_rbii_bottom_pcfg()
+    _root_nt, _bool_nt, true_nt, false_nt = _rbii_if_nonterminals(raw_pcfg)
 
     valid_skeleton = Abstraction(
         Application(
             Application(
-                Application(Primitive.GLOBALS["if"], NamedHole(bool_nt)),
-                NamedHole(char_nt),
+                Application(
+                    Primitive.GLOBALS["if"],
+                    Application(
+                        Primitive.GLOBALS["not"],
+                        Application(
+                            Application(Primitive.GLOBALS["eq_char"], NamedHole(true_nt)),
+                            NamedHole(true_nt),
+                        ),
+                    ),
+                ),
+                NamedHole(true_nt),
             ),
-            NamedHole(char_nt),
+            NamedHole(false_nt),
         )
     )
     target = (
         "(lambda "
-        "(if (eq_char (get_historical_obs 0 $0) a) "
+        "(if (not (eq_char (get_historical_obs 0 $0) (get_historical_obs 0 $0))) "
         "(get_historical_obs 1 $0) "
         "(get_historical_obs 0 $0)))"
     )
@@ -123,7 +136,7 @@ def test_bottom_quantized_enumerator_emits_eta_expanded_conditional():
         if str(program) == target:
             found_at = index
             break
-        if index >= 15000:
+        if index >= 5000:
             break
 
     assert found_at is not None

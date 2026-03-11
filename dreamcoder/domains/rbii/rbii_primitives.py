@@ -161,8 +161,8 @@ def make_rbii_grammar(
     prims.append(_primitive(str(i), tint, i))
 
   # # alphabet characters as constants
-  # for c in alphabet:
-  #   prims.append(_primitive(c, tcharacter, c))
+  for c in alphabet:
+    prims.append(_primitive(c, tcharacter, c))
 
 
   # # integer arithmetic
@@ -211,4 +211,5 @@ def make_rbii_grammar(
   # Uniform prior over primitives; variable usage weight set by logVariable.
   g = Grammar.uniform(prims)
   g.logVariable = float(cfg.log_variable)
+  g.pcfg_require_stateful_if_conditions = True
   return g

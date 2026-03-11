@@ -38,14 +38,14 @@ x restore enum debug hooks
 
 - conditional eval...does it actually make sense? not see any ifs in the 
   enum, might be that we can compile it out 
-  - make an "if" that isnt detected as conditional so we do eval both paths
+  x make an "if" that isnt detected as conditional so we do eval both paths
     at runtime?
-  - BETTER: print out programs in pre-compiled state
+  x BETTER: print out programs in pre-compiled state
   - get this working before trying MNIST which might require functioning 
     branches
 
-  - need loss ranking in pool to deal with random (unpredictable) sequences
-  - > NEXT STEP: keep working on a test case that forces if
+  x need loss ranking in pool to deal with random (unpredictable) sequences
+  x NEXT STEP: keep working on a test case that forces if
     x increase timeout
     - larger pool?
     - ??
@@ -53,7 +53,20 @@ x restore enum debug hooks
       - make a debug method to measure likehilood / check that a given 
         program can be realized within timeout/budget
         - then check it on the test case
-  - > need a better way to do integration tests on restricted vocab
+    x okay we're having real problems with the PCFC splitting crap...which I 
+      dont understand
+      x GPT fix iteration 1
+      x check enum logs to verify still enumerating properly 
+        x are valid solutions even possible?
+        x toplevel if seems precluded!?!?!
+      - try normal solver if not to avoid this whole mess (maybe)
+  
+  - test on abcde
+  - can we terminate enum early by comparing probabilities against pool min?
+    - not sure this would work...
+
+- need a better way to do integration tests on restricted vocab
+  
 
 - Arthur's test case: 
   - make a longer random string
